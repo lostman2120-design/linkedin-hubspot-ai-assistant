@@ -1,0 +1,148 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f8fafc;
+  color: #111827;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.page {
+  width: min(760px, 100vw);
+  padding: 18px;
+}
+
+.popup {
+  width: 360px;
+}
+
+.title {
+  margin: 0 0 12px;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.subtitle {
+  margin: 0 0 16px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.rows {
+  border-top: 1px solid #d8e0eb;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #d8e0eb;
+  font-size: 13px;
+}
+
+.row strong {
+  color: #334155;
+}
+
+.status-ok {
+  color: #047857;
+  font-weight: 700;
+}
+
+.status-bad {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.form {
+  display: grid;
+  gap: 14px;
+}
+
+.panel {
+  margin-top: 24px;
+  border-top: 1px solid #d8e0eb;
+  padding-top: 18px;
+}
+
+.panel-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  line-height: 1.2;
+  color: #0f172a;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  border: 1px solid #9aa9bb;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 14px;
+}
+
+.field textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.button-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.button {
+  border: 1px solid #0f766e;
+  border-radius: 8px;
+  background: #0f766e;
+  color: #ffffff;
+  min-height: 38px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button.secondary {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #9aa9bb;
+}
+
+.message {
+  font-size: 13px;
+  color: #047857;
+}
+
+.error {
+  color: #b91c1c;
+}

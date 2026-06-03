@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn to HubSpot AI Assistant",
+  "version": "0.1.0",
+  "description": "Analyze visible LinkedIn profile details, draft outreach, and save CRM updates to HubSpot.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "https://*.linkedin.com/*",
+    "http://localhost:8787/*",
+    "http://127.0.0.1:8787/*"
+  ],
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/in/*", "https://*.linkedin.com/in/*"],
+      "js": ["assets/contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "LinkedIn to HubSpot AI Assistant",
+    "default_popup": "popup.html"
+  }
+}
+

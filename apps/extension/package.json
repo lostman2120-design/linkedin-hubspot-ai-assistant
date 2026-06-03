@@ -1,0 +1,25 @@
+{
+  "name": "@linkedin-hubspot-ai/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build && node scripts/build-extension-manifest.mjs && node scripts/build-content-script.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@linkedin-hubspot-ai/shared": "workspace:*",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.2"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.1"
+  }
+}
