@@ -206,19 +206,43 @@ async function requestValidatedJson<T>(
   schema: z.ZodType<T>,
   systemPrompt: string,
   userPrompt: string,
-  retryHint: string
+  retryHint: string,
+  options: { logAnalysisPerformance?: boolean } = {}
 ): Promise<T> {
   const messages = [
     { role: "system" as const, content: systemPrompt },
     { role: "user" as const, content: userPrompt }
   ];
 
+  if (options.logAnalysisPerformance) {
+    console.log("[openai-analysis] first request started");
+  }
+  const firstStartedAt = Date.now();
   const firstJson = await requestJsonFromOpenAi(messages);
+  if (options.logAnalysisPerformance) {
+    console.log("[openai-analysis] first request completed", {
+      durationMs: Date.now() - firstStartedAt
+    });
+  }
+
   const firstParse = schema.safeParse(firstJson);
   if (firstParse.success) {
+    if (options.logAnalysisPerformance) {
+      console.log("[openai-analysis] first schema validation succeeded");
+    }
     return firstParse.data;
   }
 
+  if (options.logAnalysisPerformance) {
+    console.warn("[openai-analysis] first schema validation failed", {
+      issues: firstParse.error.issues.map((issue) => ({
+        path: issue.path.join(".") || "response",
+        message: issue.message
+      }))
+    });
+    console.log("[openai-analysis] retry started");
+  }
+  const retryStartedAt = Date.now();
   const retryJson = await requestJsonFromOpenAi([
     ...messages,
     {
@@ -228,6 +252,12 @@ async function requestValidatedJson<T>(
         .join("\n")}`
     }
   ]);
+  if (options.logAnalysisPerformance) {
+    console.log("[openai-analysis] retry completed", {
+      durationMs: Date.now() - retryStartedAt
+    });
+  }
+
   const retryParse = schema.safeParse(retryJson);
 
   if (!retryParse.success) {
@@ -239,29 +269,31 @@ async function requestValidatedJson<T>(
 
 export class OpenAiService {
   async analyzeProfile(profile: LinkedInProfile, userSettings: UserSettings): Promise<ProfileAnalysis> {
+    const analyzeStartedAt = Date.now();
     const analysisSchema = createEnglishOnlyProfileAnalysisSchema();
     const scoringContext = buildLeadScoringContext(profile, userSettings);
 
-    const systemPrompt = [
-      "You are a careful sales research assistant.",
-      "Use only the visible LinkedIn profile information provided by the user.",
-      "Separate facts from assumptions in your reasoning, but return only the requested JSON fields.",
-      "If information is not available, return the word Unknown.",
-      "Do not invent private information.",
-      buildLeadScoringInstruction(Boolean(userSettings.targetCustomerProfile.trim() || userSettings.targetRoles.trim())),
-      "Persona descriptions, pain points, icebreakers, and recommended next actions must be English-only.",
-      "Score fit against the user's ICP settings when present.",
-      "Use the Seller Context to understand what the user sells, the target outcome, differentiators, proof points, CTA, allowed claims, claims to avoid, brand voice, and compatibility context.",
-      "Do not invent proof, customer results, HubSpot usage, budget, buying intent, company size, or technology stack.",
-      "Facts must be based on visible profile text or saved user settings. Inferences must be labeled as inferences.",
-      "Recommend Research first or Skip when fit is weak or context is limited.",
-      "Do not claim the person uses HubSpot unless it is explicitly visible.",
-      "Generate three concise LinkedIn DM variants: Soft opener, Direct value pitch, and Feedback request.",
-      buildEnglishOnlyInstruction(),
-      "Always return valid JSON."
-    ].join(" ");
+    try {
+      const systemPrompt = [
+        "You are a careful sales research assistant.",
+        "Use only the visible LinkedIn profile information provided by the user.",
+        "Separate facts from assumptions in your reasoning, but return only the requested JSON fields.",
+        "If information is not available, return the word Unknown.",
+        "Do not invent private information.",
+        buildLeadScoringInstruction(Boolean(userSettings.targetCustomerProfile.trim() || userSettings.targetRoles.trim())),
+        "Persona descriptions, pain points, icebreakers, and recommended next actions must be English-only.",
+        "Score fit against the user's ICP settings when present.",
+        "Use the Seller Context to understand what the user sells, the target outcome, differentiators, proof points, CTA, allowed claims, claims to avoid, brand voice, and compatibility context.",
+        "Do not invent proof, customer results, HubSpot usage, budget, buying intent, company size, or technology stack.",
+        "Facts must be based on visible profile text or saved user settings. Inferences must be labeled as inferences.",
+        "Recommend Research first or Skip when fit is weak or context is limited.",
+        "Do not claim the person uses HubSpot unless it is explicitly visible.",
+        "Generate three concise LinkedIn DM variants: Soft opener, Direct value pitch, and Feedback request.",
+        buildEnglishOnlyInstruction(),
+        "Always return valid JSON."
+      ].join(" ");
 
-    const userPrompt = `Analyze this LinkedIn profile for sales fit.
+      const userPrompt = `Analyze this LinkedIn profile for sales fit.
 
 Return one JSON object with these exact fields:
 - leadScore: an integer from 0 to 100
@@ -299,14 +331,20 @@ Visible LinkedIn profile:
 ${JSON.stringify(safeProfileForPrompt(profile), null, 2)}
 `;
 
-    const analysis = await requestValidatedJson(
-      analysisSchema as z.ZodType<ProfileAnalysis>,
-      systemPrompt,
-      userPrompt,
-      "Return corrected JSON only. leadScore must be a meaningful integer from 0 to 100, not a copied placeholder. All text fields must be fluent English only."
-    );
+      const analysis = await requestValidatedJson(
+        analysisSchema as z.ZodType<ProfileAnalysis>,
+        systemPrompt,
+        userPrompt,
+        "Return corrected JSON only. leadScore must be a meaningful integer from 0 to 100, not a copied placeholder. All text fields must be fluent English only.",
+        { logAnalysisPerformance: true }
+      );
 
-    return ensureAnalysisDefaults(normalizeProfileAnalysisScore(analysis, profile, userSettings), profile, userSettings);
+      return ensureAnalysisDefaults(normalizeProfileAnalysisScore(analysis, profile, userSettings), profile, userSettings);
+    } finally {
+      console.log("[openai-analysis] total completed", {
+        durationMs: Date.now() - analyzeStartedAt
+      });
+    }
   }
 
   async generateDm(
