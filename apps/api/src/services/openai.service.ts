@@ -217,6 +217,7 @@ export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
       }
 
       const normalizedVariant: Record<string, unknown> = { ...variant };
+      normalizedVariant.label = normalizeDmVariantLabel(normalizedVariant.label);
       for (const field of dmVariantListFields) {
         normalizedVariant[field] = normalizeStringArrayField(normalizedVariant[field]);
       }
@@ -232,6 +233,27 @@ function normalizeStringArrayField(value: unknown): string[] {
   }
 
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function normalizeDmVariantLabel(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  if (normalized === "soft opener") {
+    return "Soft opener";
+  }
+
+  if (normalized === "direct pitch" || normalized === "direct value pitch") {
+    return "Direct value pitch";
+  }
+
+  if (normalized === "feedback request") {
+    return "Feedback request";
+  }
+
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

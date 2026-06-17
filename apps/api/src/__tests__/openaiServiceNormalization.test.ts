@@ -49,6 +49,37 @@ describe("OpenAI analysis response normalization", () => {
     expect(normalized.dmVariants[0]?.warnings).toEqual(["Review manually"]);
   });
 
+  it("normalizes known DM variant label aliases before schema validation", () => {
+    const normalized = normalizeAnalysisResponseForSchema({
+      dmVariants: [
+        { label: " Soft opener " },
+        { label: " direct   pitch " },
+        { label: "Direct value pitch" },
+        { label: "feedback request" }
+      ]
+    }) as { dmVariants: Array<Record<string, unknown>> };
+
+    expect(normalized.dmVariants.map((variant) => variant.label)).toEqual([
+      "Soft opener",
+      "Direct value pitch",
+      "Direct value pitch",
+      "Feedback request"
+    ]);
+  });
+
+  it("keeps unknown DM variant labels invalid", () => {
+    const schema = createEnglishOnlyProfileAnalysisSchema();
+    const unknownLabelResponse = buildAnalysisResponseWithValidVariantLists();
+    unknownLabelResponse.dmVariants[1] = {
+      ...unknownLabelResponse.dmVariants[1],
+      label: "Helpful nudge"
+    };
+
+    const normalized = normalizeAnalysisResponseForSchema(unknownLabelResponse);
+
+    expect(schema.safeParse(normalized).success).toBe(false);
+  });
+
   it("lets all three DM variants pass schema validation after known boolean fields are normalized", () => {
     const schema = createEnglishOnlyProfileAnalysisSchema();
     const normalized = normalizeAnalysisResponseForSchema(buildAnalysisResponseWithBooleanVariantLists());
@@ -130,6 +161,46 @@ describe("OpenAI analysis response normalization", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(analysis.dmVariants[0]?.personalizationUsed).toEqual(["Visible sales leadership role"]);
     expect(analysis.dmVariants[0]?.offerContextUsed).toEqual(["LinkedIn to HubSpot workflow"]);
+  });
+
+  it("does not trigger the retry request for the Direct pitch label alias", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test-key");
+    const responseWithAlias = buildAnalysisResponseWithValidVariantLists();
+    responseWithAlias.dmVariants[1] = {
+      ...responseWithAlias.dmVariants[1],
+      label: "Direct pitch"
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify(responseWithAlias)
+              }
+            }
+          ]
+        })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const analysis = await new OpenAiService().analyzeProfile(
+      {
+        fullName: "Avery Johnson",
+        firstName: "Avery",
+        lastName: "Johnson",
+        headline: "VP Sales at Example Corp",
+        companyName: "Example Corp",
+        profileUrl: "https://www.linkedin.com/in/avery-johnson/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(analysis.dmVariants[1]?.label).toBe("Direct value pitch");
   });
 });
 
