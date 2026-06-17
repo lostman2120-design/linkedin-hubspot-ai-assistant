@@ -202,12 +202,48 @@ function buildOpenAiErrorDetails(raw: ChatCompletionResponse, detail: string): s
   return [...new Set(details)];
 }
 
+const dmVariantListFields = ["personalizationUsed", "offerContextUsed", "factsUsed", "inferencesUsed", "warnings"] as const;
+
+export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.dmVariants)) {
+    return value;
+  }
+
+  return {
+    ...value,
+    dmVariants: value.dmVariants.map((variant) => {
+      if (!isRecord(variant)) {
+        return variant;
+      }
+
+      const normalizedVariant: Record<string, unknown> = { ...variant };
+      for (const field of dmVariantListFields) {
+        normalizedVariant[field] = normalizeStringArrayField(normalizedVariant[field]);
+      }
+
+      return normalizedVariant;
+    })
+  };
+}
+
+function normalizeStringArrayField(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 async function requestValidatedJson<T>(
   schema: z.ZodType<T>,
   systemPrompt: string,
   userPrompt: string,
   retryHint: string,
-  options: { logAnalysisPerformance?: boolean } = {}
+  options: { logAnalysisPerformance?: boolean; normalizeBeforeValidation?: (value: unknown) => unknown } = {}
 ): Promise<T> {
   const messages = [
     { role: "system" as const, content: systemPrompt },
@@ -225,7 +261,8 @@ async function requestValidatedJson<T>(
     });
   }
 
-  const firstParse = schema.safeParse(firstJson);
+  const normalizedFirstJson = options.normalizeBeforeValidation ? options.normalizeBeforeValidation(firstJson) : firstJson;
+  const firstParse = schema.safeParse(normalizedFirstJson);
   if (firstParse.success) {
     if (options.logAnalysisPerformance) {
       console.log("[openai-analysis] first schema validation succeeded");
@@ -258,7 +295,8 @@ async function requestValidatedJson<T>(
     });
   }
 
-  const retryParse = schema.safeParse(retryJson);
+  const normalizedRetryJson = options.normalizeBeforeValidation ? options.normalizeBeforeValidation(retryJson) : retryJson;
+  const retryParse = schema.safeParse(normalizedRetryJson);
 
   if (!retryParse.success) {
     throw new AppError(502, "The AI response was not in the format this app needs. Please try again.");
@@ -315,6 +353,28 @@ Return one JSON object with these exact fields:
 - scoringMetadata: scoringVersion, finalScore, fitLabel, confidence, factsUsedCount, inferencesUsedCount, missingCriteriaCount, disqualifierCount, analysisDepth
 - dmVariants: exactly three objects with label, useCase, text, personalizationUsed, offerContextUsed, factsUsed, inferencesUsed, warnings, riskLevel
 
+For every dmVariants item, these fields must always be arrays of strings, never booleans:
+{
+  "personalizationUsed": ["string"],
+  "offerContextUsed": ["string"],
+  "factsUsed": ["string"],
+  "inferencesUsed": ["string"],
+  "warnings": ["string"]
+}
+
+Compact valid DM variant example:
+{
+  "label": "Soft opener",
+  "useCase": "Use for a first touch.",
+  "text": "Hi Avery, noticed your RevOps work and thought this workflow might be relevant.",
+  "personalizationUsed": ["RevOps work"],
+  "offerContextUsed": ["LinkedIn to HubSpot workflow"],
+  "factsUsed": ["Visible RevOps role"],
+  "inferencesUsed": ["May care about cleaner CRM context"],
+  "warnings": ["Review manually before sending."],
+  "riskLevel": "low"
+}
+
 Do not use placeholder values. Calculate leadScore from the visible profile and ICP settings.
 Do not overclaim. Separate visible facts from cautious inferences in the signal arrays.
 Each DM variant must be concise, natural English, and LinkedIn-appropriate.
@@ -336,7 +396,7 @@ ${JSON.stringify(safeProfileForPrompt(profile), null, 2)}
         systemPrompt,
         userPrompt,
         "Return corrected JSON only. leadScore must be a meaningful integer from 0 to 100, not a copied placeholder. All text fields must be fluent English only.",
-        { logAnalysisPerformance: true }
+        { logAnalysisPerformance: true, normalizeBeforeValidation: normalizeAnalysisResponseForSchema }
       );
 
       return ensureAnalysisDefaults(normalizeProfileAnalysisScore(analysis, profile, userSettings), profile, userSettings);
