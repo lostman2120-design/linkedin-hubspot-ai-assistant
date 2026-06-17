@@ -113,6 +113,13 @@ textarea {
   resize: vertical;
 }
 
+.field-counter {
+  justify-self: end;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
 .button-row {
   display: flex;
   gap: 10px;

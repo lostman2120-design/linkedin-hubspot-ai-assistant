@@ -3,6 +3,7 @@ import {
   DEFAULT_CRM_STATUS,
   DM_PLACEHOLDER,
   getSyncStateForAnalyzedProfile,
+  localActionStatusForFollowUpTaskResult,
   localActionStatusForHubSpotSync,
   resetProfileSpecificState,
   shouldResetProfileSpecificState
@@ -62,5 +63,16 @@ describe("sidebar profile-specific state", () => {
   it("returns bottom local action status for HubSpot sync results", () => {
     expect(localActionStatusForHubSpotSync(true)).toEqual({ type: "success", message: "HubSpot contact created." });
     expect(localActionStatusForHubSpotSync(false)).toEqual({ type: "success", message: "HubSpot contact updated." });
+  });
+
+  it("returns clear bottom status messages for follow-up task results", () => {
+    expect(localActionStatusForFollowUpTaskResult(false)).toEqual({
+      type: "success",
+      message: "HubSpot follow-up task created."
+    });
+    expect(localActionStatusForFollowUpTaskResult(true)).toEqual({
+      type: "success",
+      message: "Follow-up note created because HubSpot task creation is not available."
+    });
   });
 });

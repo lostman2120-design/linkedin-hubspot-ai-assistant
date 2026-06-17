@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn to HubSpot AI Assistant",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Analyze visible LinkedIn profile details, draft outreach, and save CRM updates to HubSpot.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://www.linkedin.com/*",
     "https://*.linkedin.com/*",
-    "http://localhost:8787/*",
-    "http://127.0.0.1:8787/*"
+    "https://linkedin-hubspot-ai-assistant.onrender.com/*"
   ],
   "background": {
     "service_worker": "assets/background.js",
@@ -27,4 +26,3 @@
     "default_popup": "popup.html"
   }
 }
-

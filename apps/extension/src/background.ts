@@ -1,5 +1,3 @@
-import { getStoredSettings } from "./storage";
-
 type ApiRequestMessage = {
   type?: string;
   endpoint?: string;
@@ -7,13 +5,20 @@ type ApiRequestMessage = {
   body?: unknown;
 };
 
+type RuntimeMessage = ApiRequestMessage | { type?: "OPEN_OPTIONS_PAGE" };
+
 type ApiResponse = {
   ok: boolean;
+  status?: number;
   statusCode?: number;
+  code?: string;
   data?: unknown;
   error?: string;
   details?: string[];
 };
+
+const DEFAULT_BACKEND_API_URL = "https://linkedin-hubspot-ai-assistant.onrender.com";
+const SETTINGS_KEY = "linkedinHubspotAiAssistant.settings";
 
 function joinApiUrl(baseUrl: string, endpoint: string): string {
   const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
@@ -21,43 +26,102 @@ function joinApiUrl(baseUrl: string, endpoint: string): string {
   return new URL(normalizedEndpoint, normalizedBase).toString();
 }
 
-async function handleApiRequest(message: ApiRequestMessage): Promise<ApiResponse> {
-  if (!message.endpoint || !message.method) {
-    return { ok: false, statusCode: 400, error: "The extension sent an incomplete API request." };
+async function getBackendApiUrl(): Promise<string> {
+  try {
+    const result = await chrome.storage.sync.get([SETTINGS_KEY, "backendApiUrl"]);
+    const directBackendApiUrl = readNonEmptyString(result.backendApiUrl);
+    if (directBackendApiUrl) {
+      return directBackendApiUrl;
+    }
+
+    const settings = result[SETTINGS_KEY];
+    if (typeof settings === "object" && settings !== null) {
+      const storedBackendApiUrl = readNonEmptyString((settings as { backendApiUrl?: unknown }).backendApiUrl);
+      if (storedBackendApiUrl) {
+        return storedBackendApiUrl;
+      }
+    }
+  } catch {
+    // Keep the MV3 service worker resilient if Chrome storage is temporarily unavailable.
   }
 
-  const settings = await getStoredSettings();
+  return DEFAULT_BACKEND_API_URL;
+}
+
+async function handleApiRequest(message: ApiRequestMessage): Promise<ApiResponse> {
+  if (!message.endpoint || !message.method) {
+    console.error("[background] API request was incomplete.", {
+      endpoint: message.endpoint,
+      method: message.method
+    });
+    return { ok: false, status: 400, statusCode: 400, error: "The extension sent an incomplete API request." };
+  }
+
+  const backendApiUrl = await getBackendApiUrl();
+  const finalUrl = joinApiUrl(backendApiUrl, message.endpoint);
+  console.log("[background] API request prepared.", {
+    endpoint: message.endpoint,
+    method: message.method,
+    backendApiUrl,
+    finalUrl
+  });
+
   let response: Response;
   try {
-    response = await fetch(joinApiUrl(settings.backendApiUrl, message.endpoint), {
+    response = await fetch(finalUrl, {
       method: message.method,
       headers: {
         "Content-Type": "application/json"
       },
       body: message.method === "POST" ? JSON.stringify(message.body ?? {}) : undefined
     });
-  } catch {
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : "Unknown fetch error";
+    console.error("[background] API fetch failed.", {
+      endpoint: message.endpoint,
+      method: message.method,
+      finalUrl,
+      message: messageText
+    });
     return {
       ok: false,
+      status: 0,
       statusCode: 0,
-      error: "Backend API is not reachable. Check that the API is running and the Backend API URL in Options is correct."
+      error: `Failed to fetch ${finalUrl}: ${messageText}`
     };
   }
 
   const text = await response.text();
   const data = parseJsonResponse(text);
+  console.log("[background] API response received.", {
+    endpoint: message.endpoint,
+    method: message.method,
+    finalUrl,
+    ok: response.ok,
+    status: response.status,
+    hasBody: text.length > 0
+  });
 
   if (!response.ok) {
-    const errorData = typeof data === "object" && data !== null ? (data as { error?: string; details?: string[]; statusCode?: number }) : undefined;
+    const errorData =
+      typeof data === "object" && data !== null
+        ? (data as { code?: string; error?: string; details?: string[]; statusCode?: number })
+        : undefined;
     return {
       ok: false,
+      status: errorData?.statusCode ?? response.status,
       statusCode: errorData?.statusCode ?? response.status,
+      code: errorData?.code,
       error: errorData?.error ?? messageForBackendStatus(response.status),
       details: errorData?.details
     };
   }
 
-  return { ok: true, data };
+  return { ok: true, status: response.status, statusCode: response.status, data };
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function parseJsonResponse(text: string): unknown {
@@ -96,19 +160,65 @@ function messageForBackendStatus(status: number): string {
   return "The backend API returned an error.";
 }
 
-chrome.runtime.onMessage.addListener((message: ApiRequestMessage, _sender, sendResponse) => {
-  if (message.type !== "API_REQUEST") {
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
+  console.log("[background] runtime message received.", {
+    type: message?.type,
+    endpoint: message?.endpoint,
+    method: message?.method
+  });
+
+  if (message?.type === "OPEN_OPTIONS_PAGE") {
+    try {
+      chrome.runtime.openOptionsPage(() => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          console.error("[background] Failed to open Options page.", {
+            message: lastError.message
+          });
+          sendResponse({ ok: false, error: lastError.message || "Options page could not be opened." });
+          return;
+        }
+
+        sendResponse({ ok: true });
+      });
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : "Options page could not be opened.";
+      console.error("[background] Failed to open Options page.", {
+        message: messageText
+      });
+      sendResponse({ ok: false, error: messageText });
+    }
+
+    return true;
+  }
+
+  if (message?.type !== "API_REQUEST") {
     return false;
   }
 
   void handleApiRequest(message)
-    .then(sendResponse)
+    .then((response) => {
+      console.log("[background] Sending API response back to extension UI.", {
+        endpoint: message.endpoint,
+        method: message.method,
+        ok: response.ok,
+        statusCode: response.statusCode,
+        hasData: typeof response.data !== "undefined",
+        error: response.error
+      });
+      sendResponse(response);
+    })
     .catch((error: unknown) => {
       const messageText =
         error instanceof Error && error.message.trim().length > 0
           ? error.message
           : "Backend API is not reachable. Check that the API is running and the Backend API URL in Options is correct.";
-      sendResponse({ ok: false, statusCode: 0, error: messageText });
+      console.error("[background] API request handler failed before sendResponse.", {
+        endpoint: message.endpoint,
+        method: message.method,
+        message: messageText
+      });
+      sendResponse({ ok: false, status: 0, statusCode: 0, error: messageText });
     });
 
   return true;

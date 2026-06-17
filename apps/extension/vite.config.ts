@@ -1,9 +1,11 @@
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
 const defaultStripePaymentLink = "https://buy.stripe.com/4gMdR94zOalH6pebny8Vi00";
-const defaultApiBaseUrl = "http://localhost:8787";
+const defaultApiBaseUrl = "https://linkedin-hubspot-ai-assistant.onrender.com";
+const packageJson = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8")) as { version?: string };
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "VITE_");
@@ -12,7 +14,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     define: {
       __STRIPE_PAYMENT_LINK__: JSON.stringify(env.VITE_STRIPE_PAYMENT_LINK || defaultStripePaymentLink),
-      __API_BASE_URL__: JSON.stringify(env.VITE_API_BASE_URL || defaultApiBaseUrl)
+      __API_BASE_URL__: JSON.stringify(env.VITE_API_BASE_URL || defaultApiBaseUrl),
+      __EXTENSION_VERSION__: JSON.stringify(packageJson.version || "0.3.0"),
+      __PROFILE_EXTRACTION_DEBUG__: JSON.stringify(env.VITE_PROFILE_EXTRACTION_DEBUG === "true")
     },
     build: {
       outDir: "dist",

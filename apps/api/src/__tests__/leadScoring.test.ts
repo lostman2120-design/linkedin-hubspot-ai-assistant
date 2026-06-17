@@ -57,7 +57,12 @@ describe("lead scoring normalization", () => {
         companyName: "SaaS Co",
         profileUrl: "https://www.linkedin.com/in/morgan/"
       },
-      { ...DEFAULT_USER_SETTINGS }
+      {
+        ...DEFAULT_USER_SETTINGS,
+        productOrServiceDescription: "",
+        targetCustomerProfile: "",
+        targetRoles: ""
+      }
     );
 
     expect(context.heuristicScore).toBeGreaterThan(0);
@@ -84,4 +89,3 @@ describe("lead scoring normalization", () => {
     expect(normalized.leadScore).toBe(0);
   });
 });
-

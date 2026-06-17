@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { isLinkedInProfilePage } from "./linkedinProfileExtractor";
 import { SidebarApp } from "./sidebar/SidebarApp";
+import { SidebarErrorBoundary } from "./sidebar/SidebarErrorBoundary";
 import { sidebarStyles } from "./sidebar/styles";
 import { dispatchProfileUrlChanged } from "./urlEvents";
 
@@ -26,8 +27,13 @@ function mountSidebar() {
     return;
   }
 
-  if (document.getElementById(HOST_ID)) {
+  const existingHost = document.getElementById(HOST_ID);
+  if (existingHost && root) {
     return;
+  }
+
+  if (existingHost && !root) {
+    existingHost.remove();
   }
 
   const host = document.createElement("div");
@@ -42,7 +48,9 @@ function mountSidebar() {
   root = createRoot(appRoot);
   root.render(
     <React.StrictMode>
-      <SidebarApp />
+      <SidebarErrorBoundary>
+        <SidebarApp />
+      </SidebarErrorBoundary>
     </React.StrictMode>
   );
 }
@@ -51,6 +59,7 @@ mountSidebar();
 
 function handleUrlMaybeChanged() {
   if (window.location.href === lastUrl) {
+    mountSidebar();
     return;
   }
 

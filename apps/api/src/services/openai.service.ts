@@ -1,3 +1,4 @@
+import { DEFAULT_SELLER_CONTEXT } from "@linkedin-hubspot-ai/shared";
 import type { GeneratedDm, LinkedInProfile, MessageType, ProfileAnalysis, UserSettings } from "@linkedin-hubspot-ai/shared";
 import { z } from "zod";
 import { AppError } from "../utils/errors.js";
@@ -35,10 +36,20 @@ function getOpenAiApiKey(): string {
 }
 
 function buildSettingsSummary(userSettings: UserSettings): string {
+  const sellerContext = userSettings.sellerContext ?? DEFAULT_SELLER_CONTEXT;
+
   return JSON.stringify(
     {
       productOrServiceDescription: userSettings.productOrServiceDescription || "Unknown",
       targetCustomerProfile: userSettings.targetCustomerProfile || "Unknown",
+      targetIndustries: userSettings.targetIndustries || "Unknown",
+      targetRoles: userSettings.targetRoles || "Unknown",
+      targetCompanySize: userSettings.targetCompanySize || "Unknown",
+      targetRegion: userSettings.targetRegion || "Unknown",
+      mainPainPointsSolved: userSettings.mainPainPointsSolved || "Unknown",
+      excludedRoles: userSettings.excludedRoles || "Unknown",
+      preferredOutreachTone: userSettings.preferredOutreachTone || userSettings.dmTone,
+      sellerContext,
       dmTone: userSettings.dmTone,
       defaultHubSpotLifecycleStage: userSettings.defaultHubSpotLifecycleStage,
       defaultFollowUpDays: userSettings.defaultFollowUpDays
@@ -51,6 +62,12 @@ function buildSettingsSummary(userSettings: UserSettings): string {
 function safeProfileForPrompt(profile: LinkedInProfile): LinkedInProfile {
   return {
     ...profile,
+    visibleProfileContext: profile.visibleProfileContext
+      ? {
+          ...profile.visibleProfileContext,
+          rawVisibleContext: profile.visibleProfileContext.rawVisibleContext?.slice(0, 3000)
+        }
+      : undefined,
     visibleTextSample: profile.visibleTextSample?.slice(0, 1500)
   };
 }
@@ -231,8 +248,15 @@ export class OpenAiService {
       "Separate facts from assumptions in your reasoning, but return only the requested JSON fields.",
       "If information is not available, return the word Unknown.",
       "Do not invent private information.",
-      buildLeadScoringInstruction(Boolean(userSettings.targetCustomerProfile.trim())),
+      buildLeadScoringInstruction(Boolean(userSettings.targetCustomerProfile.trim() || userSettings.targetRoles.trim())),
       "Persona descriptions, pain points, icebreakers, and recommended next actions must be English-only.",
+      "Score fit against the user's ICP settings when present.",
+      "Use the Seller Context to understand what the user sells, the target outcome, differentiators, proof points, CTA, allowed claims, claims to avoid, brand voice, and compatibility context.",
+      "Do not invent proof, customer results, HubSpot usage, budget, buying intent, company size, or technology stack.",
+      "Facts must be based on visible profile text or saved user settings. Inferences must be labeled as inferences.",
+      "Recommend Research first or Skip when fit is weak or context is limited.",
+      "Do not claim the person uses HubSpot unless it is explicitly visible.",
+      "Generate three concise LinkedIn DM variants: Soft opener, Direct value pitch, and Feedback request.",
       buildEnglishOnlyInstruction(),
       "Always return valid JSON."
     ].join(" ");
@@ -241,13 +265,29 @@ export class OpenAiService {
 
 Return one JSON object with these exact fields:
 - leadScore: an integer from 0 to 100
+- fitLabel: "Strong fit", "Possible fit", "Weak fit", or "Not enough data"
+- positiveSignals: an array of short English strings
+- negativeSignals: an array of short English strings
+- missingInformation: an array of short English strings
+- riskWarnings: an array of short English strings
+- recommendedNextAction: a short English sentence
+- recommendedOutreachAngle: a short English label such as Feedback request, Soft opener, Direct pitch, Research first, or Skip / not a good fit
+- whyThisAngle: a short English explanation
+- whatToAvoid: an array of short English strings
 - persona: a short English description
 - painPoints: an array of short English strings
 - icebreaker: a short English sentence
 - recommendedAction: a short English sentence
 - confidence: "high", "medium", or "low"
+- scoreEvidence: an array of evidence objects with id, signalType, basis, category, summary, evidenceText, sourceSection, confidence, scoreImpact
+- scoringMetadata: scoringVersion, finalScore, fitLabel, confidence, factsUsedCount, inferencesUsedCount, missingCriteriaCount, disqualifierCount, analysisDepth
+- dmVariants: exactly three objects with label, useCase, text, personalizationUsed, offerContextUsed, factsUsed, inferencesUsed, warnings, riskLevel
 
-Do not use placeholder values. Calculate leadScore from the visible profile and settings.
+Do not use placeholder values. Calculate leadScore from the visible profile and ICP settings.
+Do not overclaim. Separate visible facts from cautious inferences in the signal arrays.
+Each DM variant must be concise, natural English, and LinkedIn-appropriate.
+Each DM variant must explain which offer context, visible facts, and cautious inferences it used.
+Respect claimsToAvoid and compatibilityContext from Seller Context.
 
 User settings:
 ${buildSettingsSummary(userSettings)}
@@ -260,13 +300,13 @@ ${JSON.stringify(safeProfileForPrompt(profile), null, 2)}
 `;
 
     const analysis = await requestValidatedJson(
-      analysisSchema,
+      analysisSchema as z.ZodType<ProfileAnalysis>,
       systemPrompt,
       userPrompt,
       "Return corrected JSON only. leadScore must be a meaningful integer from 0 to 100, not a copied placeholder. All text fields must be fluent English only."
     );
 
-    return normalizeProfileAnalysisScore(analysis, profile, userSettings);
+    return ensureAnalysisDefaults(normalizeProfileAnalysisScore(analysis, profile, userSettings), profile, userSettings);
   }
 
   async generateDm(
@@ -287,6 +327,9 @@ ${JSON.stringify(safeProfileForPrompt(profile), null, 2)}
       "Use modern LinkedIn-native phrasing that sounds like a real US SaaS sales professional.",
       "Avoid aggressive sales language, pressure, and repetitive phrases such as quick call.",
       "First DMs should not feel too salesy. Follow-ups should not feel pushy.",
+      "Use the recommended outreach angle and ICP settings when deciding the message angle.",
+      "Use Seller Context so the message reflects the offer, target outcome, differentiators, proof points, CTA, claims allowed, claims to avoid, brand voice, and compatibility context.",
+      "Do not invent proof. Do not claim a pain point as fact without visible evidence. Do not imply replacement if compatibility context says the offer works alongside existing tools.",
       buildEnglishOnlyInstruction(),
       "Always return valid JSON."
     ].join(" ");
@@ -298,7 +341,10 @@ Return exactly this JSON shape:
   "message": "string",
   "personalizationScore": 0,
   "spamRisk": "low | medium | high",
-  "warnings": ["string"]
+  "warnings": ["string"],
+  "offerContextUsed": ["string"],
+  "factsUsed": ["string"],
+  "inferencesUsed": ["string"]
 }
 
 Length rule: keep the message about ${maxLength} characters or less.
@@ -313,11 +359,70 @@ Profile analysis:
 ${JSON.stringify(analysis, null, 2)}
 `;
 
-    return requestValidatedJson(
-      dmSchema,
+    return requestValidatedJson<GeneratedDm>(
+      dmSchema as z.ZodType<GeneratedDm>,
       systemPrompt,
       userPrompt,
       "Return corrected JSON only. Make the message shorter, more personal, less salesy, and English-only."
     );
   }
+}
+
+function ensureAnalysisDefaults(analysis: ProfileAnalysis, profile: LinkedInProfile, userSettings: UserSettings): ProfileAnalysis {
+  const dmVariants = analysis.dmVariants.length === 3 ? analysis.dmVariants : fallbackDmVariants(analysis, profile, userSettings);
+  const recommendedNextAction = analysis.recommendedNextAction || analysis.recommendedAction;
+
+  return {
+    ...analysis,
+    recommendedNextAction,
+    recommendedAction: analysis.recommendedAction || recommendedNextAction,
+    recommendedOutreachAngle: analysis.recommendedOutreachAngle || "Research first",
+    whyThisAngle:
+      analysis.whyThisAngle ||
+      "There is not enough visible buying context to recommend a more aggressive sales angle.",
+    dmVariants
+  };
+}
+
+function fallbackDmVariants(analysis: ProfileAnalysis, profile: LinkedInProfile, userSettings: UserSettings): ProfileAnalysis["dmVariants"] {
+  const sellerContext = userSettings.sellerContext ?? DEFAULT_SELLER_CONTEXT;
+  const firstName = profile.firstName || profile.fullName.split(/\s+/)[0] || "there";
+  const context = profile.headline || profile.currentRoleTitle || profile.companyName || "your work";
+  const offer = userSettings.productOrServiceDescription || "a lightweight LinkedIn to HubSpot workflow";
+
+  return [
+    {
+      label: "Soft opener",
+      useCase: "Use when this is a first touch and the visible buying signal is not strong yet.",
+      text: `Hi ${firstName}, noticed ${context}. I am exploring a lighter way for HubSpot users to turn LinkedIn research into cleaner CRM context. Thought it could be relevant to your work.`,
+      personalizationUsed: [context],
+      offerContextUsed: [sellerContext.productOrServiceName],
+      factsUsed: [context],
+      inferencesUsed: [],
+      warnings: ["Review manually before sending."],
+      riskLevel: "low"
+    },
+    {
+      label: "Direct value pitch",
+      useCase: "Use when the profile clearly matches the ICP and a direct value angle feels appropriate.",
+      text: `Hi ${firstName}, your profile stood out because of ${context}. I am building ${offer}. It helps teams score LinkedIn leads, draft outreach, and save the context to HubSpot without extra copy-paste.`,
+      personalizationUsed: [context],
+      offerContextUsed: [sellerContext.targetOutcome],
+      factsUsed: [context],
+      inferencesUsed: analysis.scoreEvidence.filter((item) => item.basis === "inference").slice(0, 2).map((item) => item.summary),
+      warnings: analysis.whatToAvoid.slice(0, 2),
+      riskLevel: analysis.leadScore >= 70 ? "medium" : "high"
+    },
+    {
+      label: "Feedback request",
+      useCase: "Use for early feedback, Product Hunt outreach, or when a softer ask is safer than a pitch.",
+      text: `Hi ${firstName}, I am getting feedback from people close to LinkedIn prospecting and HubSpot workflows. Your ${context} caught my eye. Would a quick look at this workflow be useful to sanity-check?`,
+      personalizationUsed: [context],
+      offerContextUsed: [sellerContext.preferredCta],
+      factsUsed: [context],
+      inferencesUsed: [],
+      warnings: ["Keep the ask soft and manual."],
+      riskLevel: "low"
+    }
+  ];
 }

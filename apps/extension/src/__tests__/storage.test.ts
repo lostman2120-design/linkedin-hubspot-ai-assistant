@@ -15,6 +15,8 @@ import {
   type StorageAreaLike
 } from "../storage";
 
+const productionApiBaseUrl = "https://linkedin-hubspot-ai-assistant.onrender.com";
+
 function createStorage(initial: Record<string, unknown> = {}): StorageAreaLike & { data: Record<string, unknown> } {
   const data = { ...initial };
 
@@ -39,7 +41,10 @@ function createStorage(initial: Record<string, unknown> = {}): StorageAreaLike &
 
 describe("settings storage helper", () => {
   it("returns default settings when storage is empty", async () => {
-    await expect(getStoredSettings(createStorage())).resolves.toMatchObject(DEFAULT_USER_SETTINGS);
+    await expect(getStoredSettings(createStorage())).resolves.toMatchObject({
+      ...DEFAULT_USER_SETTINGS,
+      backendApiUrl: productionApiBaseUrl
+    });
   });
 
   it("saves and loads settings", async () => {
@@ -51,14 +56,27 @@ describe("settings storage helper", () => {
         dmTone: "friendly",
         productOrServiceDescription: "AI sales research",
         targetCustomerProfile: "B2B sales leaders",
+        targetIndustries: "B2B SaaS",
+        targetRoles: "Founder, RevOps",
+        targetCompanySize: "11-50",
+        targetRegion: "United States",
+        mainPainPointsSolved: "manual CRM entry",
+        excludedRoles: "students",
+        preferredOutreachTone: "soft feedback request",
         defaultHubSpotLifecycleStage: "lead",
         defaultFollowUpDays: 5
       },
       storage
     );
 
-    expect(storage.data[SETTINGS_KEY]).toMatchObject({ dmTone: "friendly", defaultFollowUpDays: 5 });
-    await expect(getStoredSettings(storage)).resolves.toMatchObject({ dmTone: "friendly", defaultFollowUpDays: 5 });
+    expect(storage.data[SETTINGS_KEY]).toMatchObject({ dmTone: "friendly", targetRoles: "Founder, RevOps", defaultFollowUpDays: 5 });
+    await expect(getStoredSettings(storage)).resolves.toMatchObject({
+      dmTone: "friendly",
+      targetIndustries: "B2B SaaS",
+      targetRoles: "Founder, RevOps",
+      mainPainPointsSolved: "manual CRM entry",
+      defaultFollowUpDays: 5
+    });
   });
 });
 

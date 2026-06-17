@@ -74,6 +74,15 @@ export function localActionStatusForHubSpotSync(created: boolean): LocalActionSt
   };
 }
 
+export function localActionStatusForFollowUpTaskResult(fallback: boolean): LocalActionStatus {
+  return {
+    type: "success",
+    message: fallback
+      ? "Follow-up note created because HubSpot task creation is not available."
+      : "HubSpot follow-up task created."
+  };
+}
+
 export function hasLeadScoringSettings(settings: {
   productOrServiceDescription?: string;
   targetCustomerProfile?: string;

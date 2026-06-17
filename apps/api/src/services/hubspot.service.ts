@@ -1,9 +1,10 @@
 import type { LinkedInProfile } from "@linkedin-hubspot-ai/shared";
 import { AppError } from "../utils/errors.js";
-import { mapProfileToHubSpotProperties } from "../utils/hubspotMapping.js";
+import { type HubSpotContactProperties, mapProfileToHubSpotProperties } from "../utils/hubspotMapping.js";
 
 const HUBSPOT_API_BASE = "https://api.hubapi.com";
 const NOTE_TO_CONTACT_ASSOCIATION_TYPE_ID = 202;
+const TASK_TO_CONTACT_ASSOCIATION_TYPE_ID = 204;
 
 type HubSpotObjectResponse = {
   id: string;
@@ -167,8 +168,30 @@ function isInvalidPropertyError(lowerDetail: string): boolean {
   );
 }
 
+export function isHubSpotInvalidPropertyError(error: unknown): boolean {
+  return error instanceof AppError && error.statusCode === 400 && /property|propertyname|invalid_property|does not exist/i.test(error.message);
+}
+
+export function getHubSpotInvalidPropertyNames(error: unknown): string[] {
+  if (!(error instanceof AppError) || typeof error.logDetails !== "object" || error.logDetails === null) {
+    return [];
+  }
+
+  const { responseBody } = error.logDetails as { responseBody?: HubSpotErrorResponse | string };
+  if (!responseBody || typeof responseBody === "string") {
+    return [];
+  }
+
+  const names = [
+    ...(responseBody.validationResults?.map((result) => result.propertyName) ?? []),
+    ...(responseBody.errors?.flatMap((item) => item.context?.propertyName ?? []) ?? [])
+  ].filter((name): name is string => Boolean(name));
+
+  return [...new Set(names)];
+}
+
 export class HubSpotService {
-  private async request<T>(path: string, init: RequestInit): Promise<T> {
+  private async requestWithStatus<T>(path: string, init: RequestInit): Promise<{ data: T; status: number }> {
     const response = await fetch(`${HUBSPOT_API_BASE}${path}`, {
       ...init,
       headers: {
@@ -182,7 +205,14 @@ export class HubSpotService {
       throw await readHubSpotError(response, path);
     }
 
-    return (await response.json()) as T;
+    return {
+      data: (await response.json()) as T,
+      status: response.status
+    };
+  }
+
+  private async request<T>(path: string, init: RequestInit): Promise<T> {
+    return (await this.requestWithStatus<T>(path, init)).data;
   }
 
   async searchContactByLinkedInUrl(profileUrl: string): Promise<string | null> {
@@ -209,25 +239,43 @@ export class HubSpotService {
   }
 
   async createContact(profile: LinkedInProfile, lifecycleStage?: string): Promise<string> {
-    const result = await this.request<HubSpotObjectResponse>("/crm/v3/objects/contacts", {
+    return this.createContactWithProperties(mapProfileToHubSpotProperties(profile, lifecycleStage));
+  }
+
+  async createContactWithProperties(properties: HubSpotContactProperties): Promise<string> {
+    const result = await this.requestWithStatus<HubSpotObjectResponse>("/crm/v3/objects/contacts", {
       method: "POST",
       body: JSON.stringify({
-        properties: mapProfileToHubSpotProperties(profile, lifecycleStage)
+        properties
       })
     });
 
-    return result.id;
+    console.log("[hubspot-contact] Contact created.", {
+      status: result.status,
+      contactId: result.data.id
+    });
+
+    return result.data.id;
   }
 
   async updateContact(contactId: string, profile: LinkedInProfile, lifecycleStage?: string): Promise<string> {
-    const result = await this.request<HubSpotObjectResponse>(`/crm/v3/objects/contacts/${encodeURIComponent(contactId)}`, {
+    return this.updateContactWithProperties(contactId, mapProfileToHubSpotProperties(profile, lifecycleStage));
+  }
+
+  async updateContactWithProperties(contactId: string, properties: HubSpotContactProperties): Promise<string> {
+    const result = await this.requestWithStatus<HubSpotObjectResponse>(`/crm/v3/objects/contacts/${encodeURIComponent(contactId)}`, {
       method: "PATCH",
       body: JSON.stringify({
-        properties: mapProfileToHubSpotProperties(profile, lifecycleStage)
+        properties
       })
     });
 
-    return result.id;
+    console.log("[hubspot-contact] Contact updated.", {
+      status: result.status,
+      contactId: result.data.id
+    });
+
+    return result.data.id;
   }
 
   async createNoteForContact(contactId: string, noteBody: string): Promise<string> {
@@ -255,23 +303,54 @@ export class HubSpotService {
     return result.id;
   }
 
-  async createFollowUpTask(contactId: string, taskTitle: string, taskBody: string, dueDate: string): Promise<string> {
-    const noteBody = [
-      "<strong>Follow-up Task</strong>",
-      `<br><strong>Title:</strong> ${escapeHtml(taskTitle)}`,
-      `<br><strong>Due date:</strong> ${escapeHtml(dueDate)}`,
-      `<br><strong>Details:</strong><br>${escapeHtml(taskBody)}`
-    ].join("");
+  async createFollowUpTask(contactId: string, taskTitle: string, taskBody: string, dueAt: string): Promise<string> {
+    const path = "/crm/v3/objects/tasks";
+    console.log("[follow-up-task] HubSpot task API request prepared.", {
+      method: "POST",
+      path,
+      contactId: maskHubSpotId(contactId),
+      dueAt,
+      hasTaskTitle: taskTitle.trim().length > 0,
+      hasTaskBody: taskBody.trim().length > 0,
+      associationTypeId: TASK_TO_CONTACT_ASSOCIATION_TYPE_ID,
+      hasOwnerId: false
+    });
 
-    return this.createNoteForContact(contactId, noteBody);
+    const result = await this.requestWithStatus<HubSpotObjectResponse>(path, {
+      method: "POST",
+      body: JSON.stringify({
+        properties: {
+          hs_timestamp: dueAt,
+          hs_task_subject: taskTitle,
+          hs_task_body: taskBody,
+          hs_task_status: "NOT_STARTED",
+          hs_task_priority: "MEDIUM",
+          hs_task_type: "TODO"
+        },
+        associations: [
+          {
+            to: { id: contactId },
+            types: [
+              {
+                associationCategory: "HUBSPOT_DEFINED",
+                associationTypeId: TASK_TO_CONTACT_ASSOCIATION_TYPE_ID
+              }
+            ]
+          }
+        ]
+      })
+    });
+
+    console.log("[follow-up-task] HubSpot task API succeeded.", {
+      status: result.status,
+      taskId: result.data.id
+    });
+
+    return result.data.id;
   }
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+function maskHubSpotId(value: string): string {
+  const trimmedValue = value.trim();
+  return trimmedValue.length <= 4 ? "****" : `****${trimmedValue.slice(-4)}`;
 }

@@ -12,7 +12,8 @@ export class AppError extends Error {
     public readonly statusCode: number,
     message: string,
     public readonly details?: string[],
-    public readonly logDetails?: unknown
+    public readonly logDetails?: unknown,
+    public readonly code?: string
   ) {
     super(message);
     this.name = "AppError";
@@ -32,6 +33,7 @@ export function formatApiError(error: unknown): { statusCode: number; body: ApiE
       statusCode: error.statusCode,
       body: {
         statusCode: error.statusCode,
+        code: error.code,
         error: error.message,
         details: error.details
       }
@@ -39,12 +41,19 @@ export function formatApiError(error: unknown): { statusCode: number; body: ApiE
   }
 
   if (error instanceof ZodError) {
+    const details = formatZodError(error);
+    const hasLongProfileTextError = details.some(
+      (detail) => /(visibleTextSample|visibleProfileContext\.rawVisibleContext)/.test(detail) && /at most|too_big/i.test(detail)
+    );
+
     return {
       statusCode: 400,
       body: {
         statusCode: 400,
-        error: "Some information was missing or not in the right format.",
-        details: formatZodError(error)
+        error: hasLongProfileTextError
+          ? "The profile text was too long to analyze. Please try again after refreshing the LinkedIn profile page."
+          : "Some information was missing or not in the right format.",
+        details
       }
     };
   }
@@ -81,6 +90,7 @@ export function logDetailedErrorForDevelopment(error: unknown, context: ErrorLog
           name: error.name,
           message: error.message,
           statusCode: error.statusCode,
+          code: error.code,
           details: error.details,
           logDetails: error.logDetails
         }

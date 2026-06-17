@@ -4,17 +4,24 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { Pool } from "pg";
 
 export type LicenseStatus = "active" | "past_due" | "canceled" | "inactive";
+export type LicensePlan = "beta_pro" | "pro";
+export type LicenseSource = "stripe" | "internal" | "tester";
 
 export type LicenseRecord = {
   id: string;
   email: string;
   licenseKey: string;
-  plan: "beta_pro";
+  plan: LicensePlan;
   status: LicenseStatus;
+  source: LicenseSource;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   stripeCheckoutSessionId: string | null;
   currentPeriodEnd: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  label: string | null;
+  notes: string | null;
   createdAt: string;
   updatedAt: string;
   lastEmailSentAt: string | null;
@@ -44,12 +51,30 @@ export type LicenseRepositoryLike = {
     status: LicenseStatus;
     currentPeriodEnd?: string | null;
   }): Promise<LicenseRecord>;
+  createInternalLicense(input: {
+    email: string;
+    licenseKey: string;
+    status: LicenseStatus;
+    currentPeriodEnd?: string | null;
+  }): Promise<LicenseRecord>;
+  createTesterLicense(input: {
+    email: string;
+    licenseKey: string;
+    plan: LicensePlan;
+    status: LicenseStatus;
+    expiresAt: string | null;
+    label: string;
+    notes?: string | null;
+  }): Promise<LicenseRecord>;
+  listTesterLicenses(): Promise<LicenseRecord[]>;
+  revokeLicenseByKey(licenseKey: string, revokedAt?: string): Promise<LicenseRecord | null>;
   updateLicenseStatus(
     licenseId: string,
     input: { status: LicenseStatus; currentPeriodEnd?: string | null; stripeCustomerId?: string | null }
   ): Promise<LicenseRecord | null>;
   updateLastEmailSentAt(licenseId: string, lastEmailSentAt?: string): Promise<LicenseRecord | null>;
   isLicenseKeyTaken(licenseKey: string): Promise<boolean>;
+  close?(): Promise<void>;
 };
 
 type LicenseDatabase = {
@@ -73,10 +98,15 @@ type LicenseRow = {
   license_key: string;
   plan: string;
   status: LicenseStatus;
+  source: string | null;
   stripe_customer_id: string | null;
   stripe_subscription_id: string | null;
   stripe_checkout_session_id: string | null;
   current_period_end: Date | string | null;
+  expires_at: Date | string | null;
+  revoked_at: Date | string | null;
+  label: string | null;
+  notes: string | null;
   created_at: Date | string;
   updated_at: Date | string;
   last_email_sent_at: Date | string | null;
@@ -94,14 +124,32 @@ CREATE TABLE IF NOT EXISTS licenses (
   license_key TEXT NOT NULL UNIQUE,
   plan TEXT NOT NULL DEFAULT 'beta_pro',
   status TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'stripe',
   stripe_customer_id TEXT,
   stripe_subscription_id TEXT UNIQUE,
   stripe_checkout_session_id TEXT UNIQUE,
   current_period_end TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  label TEXT,
+  notes TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_email_sent_at TIMESTAMPTZ
 );
+
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'stripe';
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS label TEXT;
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS notes TEXT;
+
+UPDATE licenses
+SET source = 'internal'
+WHERE source = 'stripe'
+  AND stripe_customer_id IS NULL
+  AND stripe_subscription_id IS NULL
+  AND stripe_checkout_session_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS processed_stripe_events (
   id TEXT PRIMARY KEY,
@@ -111,6 +159,9 @@ CREATE TABLE IF NOT EXISTS processed_stripe_events (
 );
 
 CREATE INDEX IF NOT EXISTS licenses_email_lower_idx ON licenses (LOWER(email));
+CREATE INDEX IF NOT EXISTS licenses_source_idx ON licenses (source);
+CREATE INDEX IF NOT EXISTS licenses_expires_at_idx ON licenses (expires_at);
+CREATE INDEX IF NOT EXISTS licenses_revoked_at_idx ON licenses (revoked_at);
 CREATE INDEX IF NOT EXISTS licenses_stripe_customer_id_idx ON licenses (stripe_customer_id);
 CREATE INDEX IF NOT EXISTS licenses_stripe_subscription_id_idx ON licenses (stripe_subscription_id);
 CREATE INDEX IF NOT EXISTS processed_stripe_events_stripe_event_id_idx ON processed_stripe_events (stripe_event_id);
@@ -209,6 +260,7 @@ export class FileLicenseRepository implements LicenseRepositoryLike {
         Object.assign(existingLicense, {
           email: input.email,
           status: input.status,
+          source: "stripe" satisfies LicenseSource,
           stripeCustomerId: input.stripeCustomerId,
           stripeSubscriptionId: input.stripeSubscriptionId,
           stripeCheckoutSessionId: input.stripeCheckoutSessionId,
@@ -225,15 +277,119 @@ export class FileLicenseRepository implements LicenseRepositoryLike {
         licenseKey: input.licenseKey,
         plan: "beta_pro",
         status: input.status,
+        source: "stripe",
         stripeCustomerId: input.stripeCustomerId,
         stripeSubscriptionId: input.stripeSubscriptionId,
         stripeCheckoutSessionId: input.stripeCheckoutSessionId,
         currentPeriodEnd: input.currentPeriodEnd ?? null,
+        expiresAt: null,
+        revokedAt: null,
+        label: null,
+        notes: null,
         createdAt: now,
         updatedAt: now,
         lastEmailSentAt: null
       };
       database.licenses.push(license);
+      await this.writeDatabase(database);
+      return license;
+    });
+  }
+
+  async createInternalLicense(input: {
+    email: string;
+    licenseKey: string;
+    status: LicenseStatus;
+    currentPeriodEnd?: string | null;
+  }): Promise<LicenseRecord> {
+    return this.withLock(async () => {
+      const database = await this.readDatabase();
+      const now = new Date().toISOString();
+      const license: LicenseRecord = {
+        id: randomUUID(),
+        email: input.email,
+        licenseKey: input.licenseKey,
+        plan: "beta_pro",
+        status: input.status,
+        source: "internal",
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+        stripeCheckoutSessionId: null,
+        currentPeriodEnd: input.currentPeriodEnd ?? null,
+        expiresAt: null,
+        revokedAt: null,
+        label: null,
+        notes: null,
+        createdAt: now,
+        updatedAt: now,
+        lastEmailSentAt: null
+      };
+
+      database.licenses.push(license);
+      await this.writeDatabase(database);
+      return license;
+    });
+  }
+
+  async createTesterLicense(input: {
+    email: string;
+    licenseKey: string;
+    plan: LicensePlan;
+    status: LicenseStatus;
+    expiresAt: string | null;
+    label: string;
+    notes?: string | null;
+  }): Promise<LicenseRecord> {
+    return this.withLock(async () => {
+      const database = await this.readDatabase();
+      const now = new Date().toISOString();
+      const license: LicenseRecord = {
+        id: randomUUID(),
+        email: input.email,
+        licenseKey: input.licenseKey,
+        plan: input.plan,
+        status: input.status,
+        source: "tester",
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+        stripeCheckoutSessionId: null,
+        currentPeriodEnd: null,
+        expiresAt: input.expiresAt,
+        revokedAt: null,
+        label: input.label,
+        notes: input.notes ?? null,
+        createdAt: now,
+        updatedAt: now,
+        lastEmailSentAt: null
+      };
+
+      database.licenses.push(license);
+      await this.writeDatabase(database);
+      return license;
+    });
+  }
+
+  async listTesterLicenses(): Promise<LicenseRecord[]> {
+    return this.withLock(async () => {
+      const database = await this.readDatabase();
+      return database.licenses
+        .filter((license) => license.source === "tester")
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    });
+  }
+
+  async revokeLicenseByKey(licenseKey: string, revokedAt = new Date().toISOString()): Promise<LicenseRecord | null> {
+    return this.withLock(async () => {
+      const database = await this.readDatabase();
+      const license = database.licenses.find((item) => item.licenseKey === licenseKey.trim());
+
+      if (!license) {
+        return null;
+      }
+
+      license.status = "inactive";
+      license.revokedAt = revokedAt;
+      license.updatedAt = revokedAt;
       await this.writeDatabase(database);
       return license;
     });
@@ -288,7 +444,7 @@ export class FileLicenseRepository implements LicenseRepositoryLike {
       const rawDatabase = await readFile(this.databaseFilePath, "utf8");
       const parsedDatabase = JSON.parse(rawDatabase) as Partial<LicenseDatabase>;
       return {
-        licenses: Array.isArray(parsedDatabase.licenses) ? parsedDatabase.licenses : [],
+        licenses: normalizeLicenseRecords(parsedDatabase.licenses),
         processedStripeEvents: normalizeProcessedStripeEvents(parsedDatabase.processedStripeEvents)
       };
     } catch (error) {
@@ -421,18 +577,24 @@ export class PostgresLicenseRepository implements LicenseRepositoryLike {
           license_key,
           plan,
           status,
+          source,
           stripe_customer_id,
           stripe_subscription_id,
           stripe_checkout_session_id,
           current_period_end,
+          expires_at,
+          revoked_at,
+          label,
+          notes,
           created_at,
           updated_at,
           last_email_sent_at
         )
-       VALUES ($1, $2, $3, 'beta_pro', $4, $5, $6, $7, $8::timestamptz, NOW(), NOW(), NULL)
+       VALUES ($1, $2, $3, 'beta_pro', $4, 'stripe', $5, $6, $7, $8::timestamptz, NULL, NULL, NULL, NULL, NOW(), NOW(), NULL)
        ON CONFLICT (stripe_subscription_id) DO UPDATE SET
           email = EXCLUDED.email,
           status = EXCLUDED.status,
+          source = 'stripe',
           stripe_customer_id = EXCLUDED.stripe_customer_id,
           stripe_checkout_session_id = EXCLUDED.stripe_checkout_session_id,
           current_period_end = COALESCE(EXCLUDED.current_period_end, licenses.current_period_end),
@@ -493,6 +655,111 @@ export class PostgresLicenseRepository implements LicenseRepositoryLike {
     return result.rows[0]?.exists === true;
   }
 
+  async createInternalLicense(input: {
+    email: string;
+    licenseKey: string;
+    status: LicenseStatus;
+    currentPeriodEnd?: string | null;
+  }): Promise<LicenseRecord> {
+    await this.ensureSchema();
+    const result = await this.pool.query<LicenseRow>(
+      `INSERT INTO licenses (
+          id,
+          email,
+          license_key,
+          plan,
+          status,
+          source,
+          stripe_customer_id,
+          stripe_subscription_id,
+          stripe_checkout_session_id,
+          current_period_end,
+          expires_at,
+          revoked_at,
+          label,
+          notes,
+          created_at,
+          updated_at,
+          last_email_sent_at
+        )
+       VALUES ($1, $2, $3, 'beta_pro', $4, 'internal', NULL, NULL, NULL, $5::timestamptz, NULL, NULL, NULL, NULL, NOW(), NOW(), NULL)
+       RETURNING *`,
+      [randomUUID(), input.email, input.licenseKey, input.status, input.currentPeriodEnd ?? null]
+    );
+
+    return rowToLicenseRecord(result.rows[0] as LicenseRow);
+  }
+
+  async createTesterLicense(input: {
+    email: string;
+    licenseKey: string;
+    plan: LicensePlan;
+    status: LicenseStatus;
+    expiresAt: string | null;
+    label: string;
+    notes?: string | null;
+  }): Promise<LicenseRecord> {
+    await this.ensureSchema();
+    const result = await this.pool.query<LicenseRow>(
+      `INSERT INTO licenses (
+          id,
+          email,
+          license_key,
+          plan,
+          status,
+          source,
+          stripe_customer_id,
+          stripe_subscription_id,
+          stripe_checkout_session_id,
+          current_period_end,
+          expires_at,
+          revoked_at,
+          label,
+          notes,
+          created_at,
+          updated_at,
+          last_email_sent_at
+        )
+       VALUES ($1, $2, $3, $4, $5, 'tester', NULL, NULL, NULL, NULL, $6::timestamptz, NULL, $7, $8, NOW(), NOW(), NULL)
+       RETURNING *`,
+      [
+        randomUUID(),
+        input.email,
+        input.licenseKey,
+        input.plan,
+        input.status,
+        input.expiresAt,
+        input.label,
+        input.notes ?? null
+      ]
+    );
+
+    return rowToLicenseRecord(result.rows[0] as LicenseRow);
+  }
+
+  async listTesterLicenses(): Promise<LicenseRecord[]> {
+    const rows = await this.queryLicenseRows("SELECT * FROM licenses WHERE source = 'tester' ORDER BY created_at DESC");
+    return rows.map(rowToLicenseRecord);
+  }
+
+  async revokeLicenseByKey(licenseKey: string, revokedAt = new Date().toISOString()): Promise<LicenseRecord | null> {
+    const rows = await this.queryLicenseRows(
+      `UPDATE licenses
+       SET status = 'inactive',
+           revoked_at = $2::timestamptz,
+           updated_at = NOW()
+       WHERE license_key = $1
+       RETURNING *`,
+      [licenseKey.trim(), revokedAt]
+    );
+
+    return rows[0] ? rowToLicenseRecord(rows[0]) : null;
+  }
+
+  async close(): Promise<void> {
+    await this.pool.end();
+  }
+
   private async findExistingStripeCheckoutLicense(
     stripeSubscriptionId: string,
     stripeCheckoutSessionId: string
@@ -523,6 +790,7 @@ export class PostgresLicenseRepository implements LicenseRepositoryLike {
       `UPDATE licenses
        SET email = $2,
            status = $3,
+           source = 'stripe',
            stripe_customer_id = $4,
            stripe_subscription_id = $5,
            stripe_checkout_session_id = $6,
@@ -605,21 +873,114 @@ function normalizeProcessedStripeEvents(rawEvents: unknown): ProcessedStripeEven
     .filter((event): event is ProcessedStripeEventRecord => event !== null);
 }
 
+function normalizeLicenseRecords(rawLicenses: unknown): LicenseRecord[] {
+  if (!Array.isArray(rawLicenses)) {
+    return [];
+  }
+
+  return rawLicenses.map(normalizeLicenseRecord).filter((license): license is LicenseRecord => license !== null);
+}
+
+function normalizeLicenseRecord(rawLicense: unknown): LicenseRecord | null {
+  if (!isRecord(rawLicense)) {
+    return null;
+  }
+
+  const licenseKey = stringValue(rawLicense.licenseKey);
+  if (!licenseKey) {
+    return null;
+  }
+
+  const stripeCustomerId = nullableString(rawLicense.stripeCustomerId);
+  const stripeSubscriptionId = nullableString(rawLicense.stripeSubscriptionId);
+  const stripeCheckoutSessionId = nullableString(rawLicense.stripeCheckoutSessionId);
+
+  return {
+    id: stringValue(rawLicense.id) ?? randomUUID(),
+    email: stringValue(rawLicense.email) ?? "license-holder@internal.invalid",
+    licenseKey,
+    plan: normalizeLicensePlan(stringValue(rawLicense.plan)),
+    status: normalizeLicenseStatus(stringValue(rawLicense.status)),
+    source: normalizeLicenseSource(stringValue(rawLicense.source), {
+      stripeCustomerId,
+      stripeSubscriptionId,
+      stripeCheckoutSessionId
+    }),
+    stripeCustomerId,
+    stripeSubscriptionId,
+    stripeCheckoutSessionId,
+    currentPeriodEnd: nullableString(rawLicense.currentPeriodEnd),
+    expiresAt: nullableString(rawLicense.expiresAt),
+    revokedAt: nullableString(rawLicense.revokedAt),
+    label: nullableString(rawLicense.label),
+    notes: nullableString(rawLicense.notes),
+    createdAt: stringValue(rawLicense.createdAt) ?? new Date().toISOString(),
+    updatedAt: stringValue(rawLicense.updatedAt) ?? new Date().toISOString(),
+    lastEmailSentAt: nullableString(rawLicense.lastEmailSentAt)
+  };
+}
+
 function rowToLicenseRecord(row: LicenseRow): LicenseRecord {
+  const stripeCustomerId = row.stripe_customer_id;
+  const stripeSubscriptionId = row.stripe_subscription_id;
+  const stripeCheckoutSessionId = row.stripe_checkout_session_id;
+
   return {
     id: row.id,
     email: row.email,
     licenseKey: row.license_key,
-    plan: "beta_pro",
-    status: row.status,
-    stripeCustomerId: row.stripe_customer_id,
-    stripeSubscriptionId: row.stripe_subscription_id,
-    stripeCheckoutSessionId: row.stripe_checkout_session_id,
+    plan: normalizeLicensePlan(row.plan),
+    status: normalizeLicenseStatus(row.status),
+    source: normalizeLicenseSource(row.source, {
+      stripeCustomerId,
+      stripeSubscriptionId,
+      stripeCheckoutSessionId
+    }),
+    stripeCustomerId,
+    stripeSubscriptionId,
+    stripeCheckoutSessionId,
     currentPeriodEnd: toIsoStringOrNull(row.current_period_end),
+    expiresAt: toIsoStringOrNull(row.expires_at),
+    revokedAt: toIsoStringOrNull(row.revoked_at),
+    label: row.label,
+    notes: row.notes,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
     lastEmailSentAt: toIsoStringOrNull(row.last_email_sent_at)
   };
+}
+
+function normalizeLicensePlan(value: string | null | undefined): LicensePlan {
+  return value === "pro" ? "pro" : "beta_pro";
+}
+
+function normalizeLicenseStatus(value: string | null | undefined): LicenseStatus {
+  return value === "past_due" || value === "canceled" || value === "inactive" ? value : "active";
+}
+
+function normalizeLicenseSource(
+  value: string | null | undefined,
+  stripeFields: { stripeCustomerId: string | null; stripeSubscriptionId: string | null; stripeCheckoutSessionId: string | null }
+): LicenseSource {
+  if (value === "tester" || value === "internal" || value === "stripe") {
+    return value;
+  }
+
+  return stripeFields.stripeCustomerId || stripeFields.stripeSubscriptionId || stripeFields.stripeCheckoutSessionId
+    ? "stripe"
+    : "internal";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function toIsoString(value: Date | string): string {

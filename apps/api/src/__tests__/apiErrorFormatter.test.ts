@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LinkedInProfileSchema } from "@linkedin-hubspot-ai/shared";
 import { z } from "zod";
 import { AppError, formatApiError, sanitizeSensitiveData } from "../utils/errors.js";
 
@@ -21,6 +22,21 @@ describe("formatApiError", () => {
     expect(formatted.statusCode).toBe(400);
     expect(formatted.body.statusCode).toBe(400);
     expect(formatted.body.details?.[0]).toContain("name");
+  });
+
+  it("uses a clear user-facing message for oversized visible profile text", () => {
+    const result = LinkedInProfileSchema.safeParse({
+      fullName: "Avery Johnson",
+      profileUrl: "https://www.linkedin.com/in/avery-johnson/",
+      visibleTextSample: "x".repeat(2200)
+    });
+    if (result.success) {
+      throw new Error("Expected validation to fail.");
+    }
+
+    const formatted = formatApiError(result.error);
+    expect(formatted.statusCode).toBe(400);
+    expect(formatted.body.error).toBe("The profile text was too long to analyze. Please try again after refreshing the LinkedIn profile page.");
   });
 
   it("redacts tokens from development log data", () => {

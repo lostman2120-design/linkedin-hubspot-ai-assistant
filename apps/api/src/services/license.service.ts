@@ -31,7 +31,9 @@ export async function verifyBetaProLicenseKey(
     return {
       valid: true,
       plan: "beta_pro",
-      status: "active"
+      status: "active",
+      source: "internal",
+      type: "internal"
     };
   }
 
@@ -80,12 +82,41 @@ function randomLicenseKeyGroup(): string {
 }
 
 function responseForStoredLicense(license: LicenseRecord): LicenseVerifyResponse {
-  if (license.status === "active") {
+  if (license.revokedAt) {
+    return {
+      valid: false,
+      plan: "free",
+      status: "revoked",
+      source: license.source,
+      type: license.source,
+      expiresAt: license.expiresAt,
+      currentPeriodEnd: license.currentPeriodEnd,
+      message: "This license is no longer active."
+    };
+  }
+
+  if (isExpired(license.expiresAt)) {
+    return {
+      valid: false,
+      plan: "free",
+      status: "expired",
+      source: license.source,
+      type: license.source,
+      expiresAt: license.expiresAt,
+      currentPeriodEnd: license.currentPeriodEnd,
+      message: "This test license has expired."
+    };
+  }
+
+  if (license.status === "active" && (license.plan === "beta_pro" || license.plan === "pro")) {
     return {
       valid: true,
-      plan: "beta_pro",
+      plan: license.plan,
       status: "active",
+      source: license.source,
+      type: license.source,
       email: maskEmail(license.email),
+      expiresAt: license.expiresAt,
       currentPeriodEnd: license.currentPeriodEnd
     };
   }
@@ -94,6 +125,18 @@ function responseForStoredLicense(license: LicenseRecord): LicenseVerifyResponse
     valid: false,
     plan: "free",
     status: license.status,
+    source: license.source,
+    type: license.source,
+    expiresAt: license.expiresAt,
     currentPeriodEnd: license.currentPeriodEnd
   };
+}
+
+function isExpired(expiresAt: string | null): boolean {
+  if (!expiresAt) {
+    return false;
+  }
+
+  const expiresAtTime = Date.parse(expiresAt);
+  return Number.isFinite(expiresAtTime) && expiresAtTime <= Date.now();
 }

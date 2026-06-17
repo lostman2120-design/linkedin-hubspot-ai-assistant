@@ -1,5 +1,5 @@
 import type { UserSettings } from "@linkedin-hubspot-ai/shared";
-import { DEFAULT_USER_SETTINGS, UserSettingsSchema } from "@linkedin-hubspot-ai/shared";
+import { UserSettingsSchema, normalizeUserSettingsInput } from "@linkedin-hubspot-ai/shared";
 import { EXTENSION_DEFAULT_API_BASE_URL } from "./extensionConfig";
 
 export const SETTINGS_KEY = "linkedinHubspotAiAssistant.settings";
@@ -12,8 +12,17 @@ export const FREE_PLAN_LIMITS = {
   outreachDrafts: 1
 } as const;
 
-export type PlanName = "free" | "beta_pro";
-export type LicenseStatus = "none" | "active" | "invalid" | "expired" | "past_due" | "canceled" | "inactive" | "unable_to_verify";
+export type PlanName = "free" | "beta_pro" | "pro";
+export type LicenseStatus =
+  | "none"
+  | "active"
+  | "invalid"
+  | "expired"
+  | "revoked"
+  | "past_due"
+  | "canceled"
+  | "inactive"
+  | "unable_to_verify";
 
 export type StoredLicenseState = {
   licenseKey?: string;
@@ -79,13 +88,13 @@ function parseStoredLicenseState(rawLicenseState: unknown): StoredLicenseState {
   }
 
   const licenseState = rawLicenseState as Record<string, unknown>;
-  const plan = licenseState.plan === "beta_pro" ? "beta_pro" : "free";
-  const valid = licenseState.valid === true && plan === "beta_pro" && licenseState.status === "active";
+  const plan = licenseState.plan === "pro" ? "pro" : licenseState.plan === "beta_pro" ? "beta_pro" : "free";
+  const valid = licenseState.valid === true && (plan === "beta_pro" || plan === "pro") && licenseState.status === "active";
 
   return {
     licenseKey: typeof licenseState.licenseKey === "string" ? licenseState.licenseKey : undefined,
     valid,
-    plan: valid ? "beta_pro" : "free",
+    plan: valid ? plan : "free",
     status: isLicenseStatus(licenseState.status) ? licenseState.status : "none",
     expiresAt: typeof licenseState.expiresAt === "string" ? licenseState.expiresAt : undefined,
     verifiedAt: typeof licenseState.verifiedAt === "string" ? licenseState.verifiedAt : undefined
@@ -98,6 +107,7 @@ function isLicenseStatus(value: unknown): value is LicenseStatus {
     value === "active" ||
     value === "invalid" ||
     value === "expired" ||
+    value === "revoked" ||
     value === "past_due" ||
     value === "canceled" ||
     value === "inactive" ||
@@ -105,23 +115,37 @@ function isLicenseStatus(value: unknown): value is LicenseStatus {
   );
 }
 
-export async function getStoredSettings(storageArea: StorageAreaLike = chrome.storage.sync): Promise<UserSettings> {
+export async function getStoredSettings(storageArea: StorageAreaLike = chrome.storage.local): Promise<UserSettings> {
   const stored = await storageArea.get(SETTINGS_KEY);
   const rawSettings = typeof stored[SETTINGS_KEY] === "object" && stored[SETTINGS_KEY] !== null ? stored[SETTINGS_KEY] : {};
+  const migratedSyncSettings = await maybeLoadLegacySyncSettings(storageArea, rawSettings);
 
-  return UserSettingsSchema.parse({
-    ...DEFAULT_USER_SETTINGS,
-    backendApiUrl: EXTENSION_DEFAULT_API_BASE_URL,
+  return normalizeUserSettingsInput({
+    ...migratedSyncSettings,
     ...rawSettings
-  });
+  }, EXTENSION_DEFAULT_API_BASE_URL);
 }
 
 export async function saveStoredSettings(
   settings: UserSettings,
-  storageArea: StorageAreaLike = chrome.storage.sync
+  storageArea: StorageAreaLike = chrome.storage.local
 ): Promise<void> {
   const parsed = UserSettingsSchema.parse(settings);
   await storageArea.set({ [SETTINGS_KEY]: parsed });
+}
+
+async function maybeLoadLegacySyncSettings(storageArea: StorageAreaLike, rawSettings: unknown): Promise<Record<string, unknown>> {
+  if (!isEmptyObject(rawSettings) || typeof chrome === "undefined" || storageArea !== chrome.storage.local) {
+    return {};
+  }
+
+  const storedSyncSettings = await chrome.storage.sync.get(SETTINGS_KEY).catch(() => ({}));
+  const rawSyncSettings = storedSyncSettings[SETTINGS_KEY];
+  return typeof rawSyncSettings === "object" && rawSyncSettings !== null ? (rawSyncSettings as Record<string, unknown>) : {};
+}
+
+function isEmptyObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && Object.keys(value).length === 0;
 }
 
 export async function getTodayUsageCount(storageArea: StorageAreaLike = chrome.storage.local): Promise<number> {

@@ -15,6 +15,13 @@ const betaProLicense: StoredLicenseState = {
   status: "active"
 };
 
+const proLicense: StoredLicenseState = {
+  licenseKey: "pro-key",
+  valid: true,
+  plan: "pro",
+  status: "active"
+};
+
 const unusedFreeUsage: DailyUsage = {
   date: "2026-06-02",
   profileAnalyses: 0,
@@ -25,6 +32,8 @@ describe("plan gate", () => {
   it("labels active licenses as Beta Pro", () => {
     expect(isBetaProLicenseActive(betaProLicense)).toBe(true);
     expect(planLabel(betaProLicense)).toBe("Beta Pro");
+    expect(isBetaProLicenseActive(proLicense)).toBe(true);
+    expect(planLabel(proLicense)).toBe("Pro");
   });
 
   it("allows Free users to analyze three profiles per day", () => {

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type { UserSettings } from "@linkedin-hubspot-ai/shared";
 import { DEFAULT_USER_SETTINGS } from "@linkedin-hubspot-ai/shared";
 import { apiRequest } from "../apiClient";
-import { getStoredSettings, getTodayUsageCount } from "../storage";
+import { LICENSE_STATE_KEY, getStoredLicenseState, getStoredSettings, getTodayUsageCount } from "../storage";
+import { isBetaProLicenseActive, planLabel } from "../plan";
 import "../pages.css";
 
 type ConnectionStatus = "checking" | "connected" | "not_connected";
@@ -12,13 +13,18 @@ export function Popup() {
   const [apiStatus, setApiStatus] = useState<ConnectionStatus>("checking");
   const [hubSpotConnected, setHubSpotConnected] = useState(false);
   const [usageCount, setUsageCount] = useState(0);
+  const [licensePlanLabel, setLicensePlanLabel] = useState<"Free plan" | "Beta Pro">("Free plan");
+  const [isBetaProActive, setIsBetaProActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
         const loadedSettings = await getStoredSettings();
+        const storedLicense = await getStoredLicenseState();
         setSettings(loadedSettings);
+        setLicensePlanLabel(planLabel(storedLicense));
+        setIsBetaProActive(isBetaProLicenseActive(storedLicense));
         setUsageCount(await getTodayUsageCount());
         await apiRequest<{ ok: true }>("/health", { method: "GET", trackUsage: false });
         setApiStatus("connected");
@@ -34,6 +40,23 @@ export function Popup() {
     }
 
     void load();
+  }, []);
+
+  useEffect(() => {
+    const handleStorageChanged = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName === "local" && changes[LICENSE_STATE_KEY]) {
+        void getStoredLicenseState().then((storedLicense) => {
+          setLicensePlanLabel(planLabel(storedLicense));
+          setIsBetaProActive(isBetaProLicenseActive(storedLicense));
+        });
+      }
+    };
+
+    chrome.storage.onChanged.addListener(handleStorageChanged);
+
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChanged);
+    };
   }, []);
 
   return (
@@ -55,6 +78,12 @@ export function Popup() {
         <div className="row">
           <strong>HubSpot status</strong>
           <span className={hubSpotConnected ? "status-ok" : "status-bad"}>{hubSpotConnected ? "Configured" : "Not configured"}</span>
+        </div>
+        <div className="row">
+          <strong>Plan</strong>
+          <span className={isBetaProActive ? "status-ok" : "status-bad"}>
+            {isBetaProActive ? `${licensePlanLabel} active` : licensePlanLabel}
+          </span>
         </div>
         <div className="row">
           <strong>Today's usage count</strong>

@@ -1,3 +1,4 @@
+/* global process */
 import { build } from "esbuild";
 
 await build({
@@ -9,8 +10,8 @@ await build({
   outfile: "dist/assets/contentScript.js",
   jsx: "automatic",
   define: {
-    "process.env.NODE_ENV": "\"production\""
+    "process.env.NODE_ENV": "\"production\"",
+    __PROFILE_EXTRACTION_DEBUG__: process.env.VITE_PROFILE_EXTRACTION_DEBUG === "true" ? "true" : "false"
   },
   logLevel: "info"
 });
-

@@ -9,6 +9,8 @@ It adds a sidebar to LinkedIn profile pages. The sidebar can read visible profil
 - Analyzes the LinkedIn profile that is open now.
 - Uses only text that is visible on the page.
 - Creates a lead score, persona, pain points, icebreaker, and next action.
+- Shows why the lead score was given, with visible evidence and clear AI inference labels.
+- Uses your saved Seller Context, so messages match what you sell.
 - Drafts short LinkedIn messages for the user to review.
 - Creates or updates one HubSpot contact.
 - Saves an AI summary note to HubSpot.
@@ -40,6 +42,7 @@ Beta Pro:
 
 - Costs $19/month during beta.
 - Unlocks all outreach drafts.
+- Unlocks Seller Context powered scoring and message drafts.
 - Unlocks HubSpot contact sync.
 - Unlocks HubSpot AI summary notes.
 - Unlocks follow-up task notes.
@@ -130,6 +133,43 @@ HUBSPOT_PRIVATE_APP_TOKEN=your_hubspot_private_app_token_here
 The Chrome extension never stores this token.
 
 This app uses HubSpot's default LinkedIn URL contact property, `hs_linkedin_url`, to find the same person again later.
+
+## HubSpot Contact Properties And AI Notes
+
+When you click **Add to HubSpot**, the app writes only safe, known data.
+
+Standard HubSpot contact properties:
+
+- `firstname`
+- `lastname`
+- `company`
+- `jobtitle`
+- `lifecyclestage`
+- `hs_linkedin_url`
+
+The app does not invent phone numbers, city, country, email address, or company domain. If that data is not visible or known, it stays blank.
+
+AI analysis is always saved to a structured HubSpot note when the contact is created or updated. The note includes the LinkedIn URL, headline, company, ICP fit score, fit label, confidence, analysis depth, evidence behind the score, AI inferences, outreach angle, suggested DM variants, and next action.
+
+Optional AI contact properties:
+
+- `ai_lead_score`
+- `ai_lead_fit`
+- `ai_persona`
+- `ai_pain_points`
+- `ai_icebreaker`
+- `ai_suggested_dm`
+- `ai_next_action`
+- `ai_personalization_score`
+- `ai_spam_risk`
+
+Only enable these if you have created those custom Contact properties in HubSpot:
+
+```env
+HUBSPOT_SYNC_AI_CONTACT_PROPERTIES=true
+```
+
+You can also change each property name with the `HUBSPOT_AI_*_PROPERTY` variables in `apps/api/.env`. If a custom property is not configured or HubSpot rejects it, the contact still syncs and the AI details are saved as a note.
 
 ## How To Set The Stripe Payment Link
 
@@ -329,11 +369,33 @@ apps/extension/dist
 6. Open the extension Options page.
 7. Make sure the Backend API URL is `http://localhost:8787`.
 8. Add your product description and target customer profile.
-9. Save the settings.
-10. If you have a Beta Pro license key, add it in the License section and click Activate license.
-11. Copy the extension ID from `chrome://extensions`.
-12. Add `ALLOWED_EXTENSION_ORIGIN=chrome-extension://your_extension_id_here` to `apps/api/.env`.
-13. Restart the backend API.
+9. Fill in Seller Context so the assistant knows what you sell.
+10. Save the settings.
+11. If you have a Beta Pro license key, add it in the License section and click Activate license.
+12. Copy the extension ID from `chrome://extensions`.
+13. Add `ALLOWED_EXTENSION_ORIGIN=chrome-extension://your_extension_id_here` to `apps/api/.env`.
+14. Restart the backend API.
+
+## Seller Context
+
+Seller Context tells the assistant what you sell. It helps the score, outreach angle, and DM drafts feel specific instead of generic.
+
+Open the Options page and fill in:
+
+- Product or service name
+- Product or service description
+- Target outcome
+- Main differentiators
+- Proof points
+- Pricing or pricing context
+- Preferred CTA
+- Claims allowed
+- Claims to avoid
+- Brand voice
+- Competitors or existing alternatives
+- Compatibility or coexistence context
+
+Do not put API keys, passwords, tokens, or private internal secrets in Seller Context.
 
 ## How To Activate A License
 
@@ -596,13 +658,14 @@ Before uploading the new package:
 2. Open one LinkedIn profile page.
 3. The sidebar appears on the right side.
 4. Click Analyze Profile.
-5. Review the lead score and AI analysis.
-6. Click Generate Connection Message, Generate First DM, or Generate Follow-up.
-7. Review the message yourself.
-8. Click Copy DM if you want to paste it manually.
-9. Click Add to HubSpot to create or update the contact.
-10. Click Create HubSpot Note to save the AI summary.
-11. Click Create Follow-up Task to save a follow-up note in HubSpot.
+5. Review the ICP Fit Score and the "Why this score?" evidence.
+6. Review the Messaging context summary.
+7. Click Generate Connection Message, Generate First DM, or Generate Follow-up.
+8. Review the message yourself.
+9. Click Copy DM if you want to paste it manually.
+10. Click Add to HubSpot to create or update the contact.
+11. Click Create HubSpot Note to save the AI summary.
+12. Click Create Follow-up Task to save a follow-up note in HubSpot.
 
 ## HubSpot Follow-up Task Method
 

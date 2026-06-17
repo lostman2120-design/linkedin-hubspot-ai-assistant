@@ -8,7 +8,11 @@
     "build": "corepack pnpm --filter @linkedin-hubspot-ai/shared build && corepack pnpm --filter @linkedin-hubspot-ai/api build && corepack pnpm --filter @linkedin-hubspot-ai/extension build",
     "test": "corepack pnpm -r test",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "license:create-tester": "corepack pnpm --filter @linkedin-hubspot-ai/api license:create-tester",
+    "license:revoke": "corepack pnpm --filter @linkedin-hubspot-ai/api license:revoke",
+    "license:inspect": "corepack pnpm --filter @linkedin-hubspot-ai/api license:inspect",
+    "license:list-testers": "corepack pnpm --filter @linkedin-hubspot-ai/api license:list-testers"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

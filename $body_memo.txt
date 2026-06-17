@@ -1,0 +1,24 @@
+$body = @{
+  email = "nanimono2120@gmail.com"
+  licenseKey = "lh-beta-TEST-1234-5678-ABCD"
+  productName = "LinkedIn to HubSpot AI Assistant — Beta"
+  chromeWebStoreUrl = "https://chromewebstore.google.com/detail/linkedin-to-hubspot-ai-as/mlioefhljfcgleibeibbifdemagocfld"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri "https://hooks.zapier.com/hooks/catch/27777411/4bi99dv/" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+
+$env:VITE_API_BASE_URL="https://linkedin-hubspot-ai-assistant.onrender.com"
+$env:VITE_STRIPE_PAYMENT_LINK="https://buy.stripe.com/4gMdR94zOalH6pebny8Vi00"
+corepack pnpm build
+
+$licenseKey = "lh-beta-PM4A-55P9-ZUQB-QA5T"
+
+Invoke-RestMethod `
+  -Uri "https://linkedin-hubspot-ai-assistant.onrender.com/api/license/verify" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body (@{ licenseKey = $licenseKey } | ConvertTo-Json)

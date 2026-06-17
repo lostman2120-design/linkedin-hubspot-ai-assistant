@@ -7,6 +7,11 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "db:push": "tsx src/scripts/db-push.ts",
+    "license:create-internal": "tsx src/scripts/create-internal-license.ts",
+    "license:create-tester": "tsx src/scripts/create-tester-license.ts",
+    "license:revoke": "tsx src/scripts/revoke-license.ts",
+    "license:inspect": "tsx src/scripts/inspect-license.ts",
+    "license:list-testers": "tsx src/scripts/list-tester-licenses.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "test": "vitest run"

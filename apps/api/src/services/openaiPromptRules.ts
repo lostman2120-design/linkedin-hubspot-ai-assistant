@@ -74,7 +74,31 @@ export function createEnglishOnlyProfileAnalysisSchema() {
         persona: value.persona,
         painPoints: value.painPoints,
         icebreaker: value.icebreaker,
-        recommendedAction: value.recommendedAction
+        recommendedAction: value.recommendedAction,
+        recommendedNextAction: value.recommendedNextAction,
+        positiveSignals: value.positiveSignals,
+        negativeSignals: value.negativeSignals,
+        missingInformation: value.missingInformation,
+        riskWarnings: value.riskWarnings,
+        recommendedOutreachAngle: value.recommendedOutreachAngle,
+        whyThisAngle: value.whyThisAngle,
+        whatToAvoid: value.whatToAvoid,
+        scoreEvidence: (value.scoreEvidence ?? []).map((item) => ({
+          summary: item.summary,
+          sourceSection: item.sourceSection,
+          confidence: item.confidence
+        })),
+        dmVariants: (value.dmVariants ?? []).map((variant) => ({
+          label: variant.label,
+          useCase: variant.useCase,
+          text: variant.text,
+          personalizationUsed: variant.personalizationUsed,
+          offerContextUsed: variant.offerContextUsed,
+          factsUsed: variant.factsUsed,
+          inferencesUsed: variant.inferencesUsed,
+          warnings: variant.warnings,
+          riskLevel: variant.riskLevel
+        }))
       },
       context
     );
@@ -102,7 +126,10 @@ export function createEnglishOnlyGeneratedDmSchema(maxLength: number) {
     validateEnglishOnlyStrings(
       {
         message: value.message,
-        warnings: value.warnings
+        warnings: value.warnings,
+        offerContextUsed: value.offerContextUsed,
+        factsUsed: value.factsUsed,
+        inferencesUsed: value.inferencesUsed
       },
       context
     );

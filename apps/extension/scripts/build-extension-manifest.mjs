@@ -3,13 +3,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const manifestPath = resolve("dist", "manifest.json");
-const apiBaseUrl = process.env.VITE_API_BASE_URL?.trim();
+const defaultApiBaseUrl = "https://linkedin-hubspot-ai-assistant.onrender.com";
+const apiBaseUrl = process.env.VITE_API_BASE_URL?.trim() || defaultApiBaseUrl;
 
 function apiHostPermissions() {
-  if (!apiBaseUrl) {
-    return ["http://localhost:8787/*", "http://127.0.0.1:8787/*"];
-  }
-
   try {
     const url = new URL(apiBaseUrl);
     return [`${url.origin}/*`];

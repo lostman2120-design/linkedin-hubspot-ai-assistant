@@ -23,11 +23,15 @@ export type PlanAccessResult = {
 };
 
 export function isBetaProLicenseActive(licenseState: StoredLicenseState): boolean {
-  return licenseState.valid && licenseState.plan === "beta_pro" && licenseState.status === "active";
+  return licenseState.valid && (licenseState.plan === "beta_pro" || licenseState.plan === "pro") && licenseState.status === "active";
 }
 
-export function planLabel(licenseState: StoredLicenseState): "Free plan" | "Beta Pro" {
-  return isBetaProLicenseActive(licenseState) ? "Beta Pro" : "Free plan";
+export function planLabel(licenseState: StoredLicenseState): "Free plan" | "Beta Pro" | "Pro" {
+  if (!isBetaProLicenseActive(licenseState)) {
+    return "Free plan";
+  }
+
+  return licenseState.plan === "pro" ? "Pro" : "Beta Pro";
 }
 
 export function getPlanAccess({ feature, licenseState, usage }: PlanAccessInput): PlanAccessResult {

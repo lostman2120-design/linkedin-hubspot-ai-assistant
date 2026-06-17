@@ -10,8 +10,7 @@ describe("splitFullName", () => {
     expect(splitFullName("Mary Ann Smith")).toEqual({ firstName: "Mary", lastName: "Ann Smith" });
   });
 
-  it("uses Unknown when the name is unavailable", () => {
-    expect(splitFullName("Unable to extract this field")).toEqual({ firstName: "Unknown" });
+  it("does not invent an Unknown fallback when the name is unavailable", () => {
+    expect(splitFullName("Unable to extract this field")).toEqual({ firstName: "" });
   });
 });
-

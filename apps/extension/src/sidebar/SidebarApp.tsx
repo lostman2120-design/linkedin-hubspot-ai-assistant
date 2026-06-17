@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GeneratedDm, HubSpotSyncResult, LinkedInProfile, MessageType, ProfileAnalysis, UserSettings } from "@linkedin-hubspot-ai/shared";
-import { DEFAULT_USER_SETTINGS, UNABLE_TO_EXTRACT_FIELD } from "@linkedin-hubspot-ai/shared";
+import type { DmVariant, GeneratedDm, HubSpotSyncResult, LinkedInProfile, MessageType, ProfileAnalysis, ScoreEvidence, UserSettings } from "@linkedin-hubspot-ai/shared";
+import {
+  DEFAULT_USER_SETTINGS,
+  PROFILE_TEXT_LIMITS,
+  UNABLE_TO_EXTRACT_FIELD,
+  getProfileUrl,
+  validateLinkedInProfileIdentity
+} from "@linkedin-hubspot-ai/shared";
 import { apiRequest } from "../apiClient";
 import { STRIPE_PAYMENT_LINK } from "../billing";
 import {
@@ -10,15 +16,16 @@ import {
   type LicenseStatusMessage
 } from "../licenseActivation";
 import { extractLinkedInProfile, getCurrentLinkedInProfileUrl, isLinkedInProfilePage } from "../linkedinProfileExtractor";
+import { openExtensionOptionsPage } from "../optionsNavigation";
 import { getPlanAccess, isBetaProLicenseActive, isFeatureLockedForFree, planLabel, type PlanFeature } from "../plan";
 import {
   DAILY_USAGE_KEY,
   DEFAULT_LICENSE_STATE,
   FREE_PLAN_LIMITS,
   LICENSE_STATE_KEY,
+  SETTINGS_KEY,
   getDailyUsage,
   getStoredLicenseState,
-  getStoredSettings,
   incrementDailyUsage,
   type DailyUsage,
   type StoredLicenseState
@@ -31,11 +38,29 @@ import {
   SCORING_SETTINGS_WARNING,
   getSyncStateForAnalyzedProfile,
   hasLeadScoringSettings,
+  localActionStatusForFollowUpTaskResult,
   localActionStatusForHubSpotSync,
   type LocalActionStatus
 } from "./sidebarState";
+import { normalizeAnalysisResult } from "./analysisNormalizer";
+import { buildIcpSummaryFields, getIcpSettingsSafe } from "./icpSummary";
+import { buildSellerContextSummaryFields, sellerContextStatus } from "./sellerContextSummary";
 
 type SidebarStatus = "idle" | "analyzing" | "analysis_complete" | "generating_dm" | "syncing_hubspot" | "success" | "error";
+type PendingHubSpotAction = "contact" | "note" | "task";
+type FollowUpTaskResult =
+  | {
+      taskId: string;
+      fallback: false;
+      createdAs: "task";
+      message: string;
+    }
+  | {
+      noteId: string;
+      fallback: true;
+      createdAs: "note";
+      message: string;
+    };
 
 function statusLabel(status: SidebarStatus): string {
   const labels: Record<SidebarStatus, string> = {
@@ -72,10 +97,6 @@ function scoreBand(score: number | undefined): string {
     return "Strong fit";
   }
 
-  if (score >= 60) {
-    return "Good fit";
-  }
-
   if (score >= 40) {
     return "Possible fit";
   }
@@ -84,7 +105,54 @@ function scoreBand(score: number | undefined): string {
     return "Weak fit";
   }
 
-  return "Poor fit";
+  return "Not enough data";
+}
+
+function titleCaseConfidence(value: string | undefined): string {
+  if (!value) {
+    return "Not analyzed";
+  }
+
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function compactSnippet(value: string | undefined, fallback: string): string {
+  if (!value?.trim()) {
+    return fallback;
+  }
+
+  return value.trim().length > 260 ? `${value.trim().slice(0, 260)}...` : value.trim();
+}
+
+function confidenceExplanation(analysis: ProfileAnalysis | null): string {
+  if (!analysis) {
+    return "Analyze this profile to see confidence details.";
+  }
+
+  const metadata = analysis.scoringMetadata;
+  if (analysis.confidence === "low") {
+    return "Low confidence because visible evidence is limited or important ICP criteria are missing.";
+  }
+
+  if (metadata.disqualifierCount > 0) {
+    return "Confidence is affected by visible disqualifiers that should be reviewed before outreach.";
+  }
+
+  if (metadata.missingCriteriaCount > metadata.factsUsedCount) {
+    return "Confidence is limited because several ICP criteria are not visible on the profile.";
+  }
+
+  return "Confidence is based on visible profile facts, saved ICP settings, and clearly labeled AI inferences.";
+}
+
+function evidenceGroup(items: ScoreEvidence[], signalType: ScoreEvidence["signalType"], basis?: ScoreEvidence["basis"]): ScoreEvidence[] {
+  return items.filter((item) => item.signalType === signalType && (!basis || item.basis === basis));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 async function copyText(text: string): Promise<void> {
@@ -104,6 +172,35 @@ async function copyText(text: string): Promise<void> {
   textarea.remove();
 }
 
+function EvidenceGroup({ title, items, inference = false }: { title: string; items: ScoreEvidence[]; inference?: boolean }) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <div className="lhai-evidence-group">
+      <span className="lhai-label">{title}</span>
+      <div className="lhai-evidence-list">
+        {items.map((item) => (
+          <article className="lhai-evidence-card" key={item.id}>
+            <div className="lhai-section-heading">
+              <strong>{item.summary}</strong>
+              <span className={`lhai-evidence-badge ${item.basis === "fact" ? "lhai-evidence-badge-fact" : "lhai-evidence-badge-inference"}`}>
+                {inference || item.basis === "inference" ? "AI inference - not confirmed" : "Fact"}
+              </span>
+            </div>
+            {item.evidenceText ? <p className="lhai-value">Evidence: {item.evidenceText}</p> : null}
+            <p className="lhai-value lhai-muted">
+              Source: {item.sourceSection.replace("_", " ")} · Confidence: {item.confidence}
+              {typeof item.scoreImpact === "number" ? ` · Impact: ${item.scoreImpact > 0 ? "+" : ""}${item.scoreImpact}` : ""}
+            </p>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function UpgradeCallout() {
   return (
     <div className="lhai-upgrade-callout">
@@ -120,6 +217,11 @@ function UpgradeCallout() {
 export function SidebarApp() {
   const [status, setStatus] = useState<SidebarStatus>("idle");
   const [settings, setSettings] = useState<UserSettings>({ ...DEFAULT_USER_SETTINGS });
+  const [icpUsingDefaults, setIcpUsingDefaults] = useState(true);
+  const [icpLoadFailed, setIcpLoadFailed] = useState(false);
+  const [showIcpDetails, setShowIcpDetails] = useState(false);
+  const [showSellerContextDetails, setShowSellerContextDetails] = useState(false);
+  const [showAllScoreEvidence, setShowAllScoreEvidence] = useState(false);
   const [licenseState, setLicenseState] = useState<StoredLicenseState>({ ...DEFAULT_LICENSE_STATE });
   const [licenseKeyInput, setLicenseKeyInput] = useState("");
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatusMessage | null>(null);
@@ -135,6 +237,7 @@ export function SidebarApp() {
   const [crmStatus, setCrmStatus] = useState(DEFAULT_CRM_STATUS);
   const [, setNoteStatus] = useState<string | null>(null);
   const [, setTaskStatus] = useState<string | null>(null);
+  const [pendingHubSpotAction, setPendingHubSpotAction] = useState<PendingHubSpotAction | null>(null);
   const [nextAction, setNextAction] = useState(DEFAULT_NEXT_ACTION);
   const [message, setMessage] = useState<string | null>(null);
   const [localActionStatus, setLocalActionStatus] = useState<LocalActionStatus | null>(null);
@@ -148,11 +251,14 @@ export function SidebarApp() {
   const isBetaPro = isBetaProLicenseActive(licenseState);
   const currentPlanLabel = planLabel(licenseState);
   const visibleGeneratedDm = generatedDmProfileUrl === lastAnalyzedProfileUrl ? generatedDm : null;
-  const leadScoreDisplay = analysis ? (analysis.confidence === "low" ? "Fit: Unknown" : String(analysis.leadScore)) : "--";
+  const renderedAnalysis = useMemo(() => (analysis ? normalizeAnalysisResult(analysis) : null), [analysis]);
+  const leadScoreDisplay = renderedAnalysis ? (renderedAnalysis.confidence === "low" ? "Fit: Unknown" : String(renderedAnalysis.leadScore)) : "--";
   const showScoringSettingsWarning = !hasLeadScoringSettings(settings);
   const analyzeButtonLabel = status === "analyzing" ? "Analyzing..." : "Analyze Profile";
   const isGeneratingDm = status === "generating_dm";
   const isSyncingHubSpot = status === "syncing_hubspot";
+  const isCreatingFollowUpTask = isSyncingHubSpot && pendingHubSpotAction === "task";
+  const createFollowUpTaskButtonLabel = isCreatingFollowUpTask ? "Creating follow-up task..." : "Create Follow-up Task";
   const analyzeAccess = getPlanAccess({ feature: "analyze_profile", licenseState, usage: dailyUsage });
   const firstDmAccess = getPlanAccess({ feature: "first_dm", licenseState, usage: dailyUsage });
   const isAnalyzeBlockedByPlan = !analyzeAccess.allowed;
@@ -160,18 +266,36 @@ export function SidebarApp() {
   const isConnectionMessageLocked = isFeatureLockedForFree("connection_message", licenseState);
   const isFollowUpLocked = isFeatureLockedForFree("follow_up", licenseState);
   const areHubSpotActionsLocked = !isBetaPro;
+  const positiveSignals = renderedAnalysis?.positiveSignals ?? [];
+  const negativeSignals = renderedAnalysis?.negativeSignals ?? [];
+  const missingInformation = renderedAnalysis?.missingInformation ?? [];
+  const riskWarnings = renderedAnalysis?.riskWarnings ?? [];
+  const painPoints = renderedAnalysis?.painPoints ?? [];
+  const whatToAvoid = renderedAnalysis?.whatToAvoid ?? [];
+  const dmVariants = renderedAnalysis?.dmVariants ?? [];
+  const scoreEvidence = renderedAnalysis?.scoreEvidence ?? [];
+  const visibleScoreEvidence = showAllScoreEvidence ? scoreEvidence : scoreEvidence.slice(0, 6);
+  const generatedDmWarnings = Array.isArray(visibleGeneratedDm?.warnings) ? visibleGeneratedDm.warnings : [];
+  const extractionWarnings = Array.isArray(profile?.extractionWarnings) ? profile.extractionWarnings : [];
+  const icpSummaryFields = useMemo(() => buildIcpSummaryFields(settings), [settings]);
+  const primaryIcpSummaryFields = icpSummaryFields.slice(0, 3);
+  const detailedIcpSummaryFields = showIcpDetails ? icpSummaryFields.slice(3) : [];
+  const sellerContextSummaryFields = useMemo(() => buildSellerContextSummaryFields(settings), [settings]);
+  const primarySellerContextFields = sellerContextSummaryFields.slice(0, 3);
+  const detailedSellerContextFields = showSellerContextDetails ? sellerContextSummaryFields.slice(3) : [];
+  const currentSellerContextStatus = sellerContextStatus(settings.sellerContext);
 
   useEffect(() => {
-    void getStoredSettings().then(setSettings).catch(() => {
-      setMessage("Settings could not be loaded. Open Options and save your settings again.");
-      setStatus("error");
-    });
-
+    void refreshSettingsState();
     void refreshPlanState(true);
   }, []);
 
   useEffect(() => {
     const handleStorageChanged = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName === "local" && changes[SETTINGS_KEY]) {
+        void refreshSettingsState();
+      }
+
       if (areaName === "local" && (changes[LICENSE_STATE_KEY] || changes[DAILY_USAGE_KEY])) {
         void refreshPlanState(Boolean(changes[LICENSE_STATE_KEY]));
       }
@@ -201,6 +325,13 @@ export function SidebarApp() {
       window.removeEventListener("popstate", handleProfileUrlChanged);
     };
   }, []);
+
+  async function refreshSettingsState() {
+    const result = await getIcpSettingsSafe();
+    setSettings(result.settings);
+    setIcpUsingDefaults(result.usingDefaults);
+    setIcpLoadFailed(result.loadFailed);
+  }
 
   async function refreshPlanState(syncLicenseInput = false) {
     const [storedLicenseState, storedDailyUsage] = await Promise.all([getStoredLicenseState(), getDailyUsage()]);
@@ -261,6 +392,14 @@ export function SidebarApp() {
     );
   }
 
+  async function openOptionsPage() {
+    const result = await openExtensionOptionsPage();
+    if (!result.ok) {
+      setStatus("error");
+      setMessage(result.error || "Options page could not be opened. Open it from the extension popup or chrome://extensions.");
+    }
+  }
+
   async function handleActivateLicense() {
     setIsLicenseBusy(true);
     setLicenseStatus(null);
@@ -272,8 +411,12 @@ export function SidebarApp() {
       setLicenseStatus(result.statusMessage);
 
       if (isBetaProLicenseActive(result.licenseState)) {
+        let refreshFailed = false;
+        await refreshPlanState(true).catch(() => {
+          refreshFailed = true;
+        });
         setStatus("success");
-        setMessage("License active");
+        setMessage(refreshFailed ? "License activated. If the plan does not update, please close and reopen the extension popup." : "License active");
         setUpgradeMessage(null);
         setLocalActionStatus(null);
         return;
@@ -318,11 +461,52 @@ export function SidebarApp() {
     setCrmStatus(DEFAULT_CRM_STATUS);
     setNoteStatus(null);
     setTaskStatus(null);
+    setPendingHubSpotAction(null);
     setMessage(null);
     setLocalActionStatus(null);
     setUpgradeMessage(null);
     setStatus("idle");
     setNextAction(DEFAULT_NEXT_ACTION);
+  }
+
+  async function extractProfileWithSingleRetry(): Promise<LinkedInProfile> {
+    if (!isLinkedInProfilePage()) {
+      throw new Error("Open a LinkedIn profile page before analyzing.");
+    }
+
+    let extractedProfile = extractLinkedInProfile();
+    let validation = validateLinkedInProfileIdentity(extractedProfile);
+
+    if (validation.ok) {
+      return extractedProfile;
+    }
+
+    setMessage("Profile is still loading. Retrying...");
+    await delay(800);
+
+    extractedProfile = extractLinkedInProfile();
+    validation = validateLinkedInProfileIdentity(extractedProfile);
+
+    if (!validation.ok) {
+      throw new Error(validation.message);
+    }
+
+    return extractedProfile;
+  }
+
+  function hubSpotPreflightError(profileToSync: LinkedInProfile): string | null {
+    const validation = validateLinkedInProfileIdentity(profileToSync);
+    console.log("[SidebarApp] HubSpot sync preflight.", {
+      fullName: profileToSync.fullName,
+      headline: profileToSync.headline,
+      companyName: profileToSync.companyName,
+      location: profileToSync.location,
+      profileUrl: getProfileUrl(profileToSync),
+      passed: validation.ok,
+      failure: validation.ok ? undefined : validation.reason
+    });
+
+    return validation.ok ? null : validation.message;
   }
 
   async function analyzeProfile() {
@@ -331,8 +515,12 @@ export function SidebarApp() {
     }
 
     try {
-      const extractedProfile = extractLinkedInProfile();
+      setStatus("analyzing");
+      setMessage(null);
+      setNextAction("The AI is reviewing the visible profile information.");
+      const extractedProfile = await extractProfileWithSingleRetry();
       const profileUrl = extractedProfile.profileUrl;
+      const shouldPreservePreviousAnalysis = profileUrl === lastAnalyzedProfileUrl && renderedAnalysis;
       const requestId = analysisRequestIdRef.current + 1;
       analysisRequestIdRef.current = requestId;
       dmRequestIdRef.current += 1;
@@ -346,7 +534,7 @@ export function SidebarApp() {
       });
 
       setProfile(extractedProfile);
-      setAnalysis(null);
+      setAnalysis(shouldPreservePreviousAnalysis ? renderedAnalysis : null);
       setGeneratedDm(null);
       setGeneratedDmProfileUrl(null);
       setSelectedMessageType(null);
@@ -357,23 +545,38 @@ export function SidebarApp() {
       setContactId(syncState.contactId);
       setCrmStatus(syncState.crmStatus);
       setSyncedProfileUrl(syncState.syncedProfileUrl);
-      setStatus("analyzing");
-      setMessage(null);
-      setNextAction("The AI is reviewing the visible profile information.");
+      console.log("[SidebarApp] Analyze Profile request prepared.", {
+        profileUrl,
+        fullName: extractedProfile.fullName || undefined,
+        visibleTextSampleLength: extractedProfile.visibleTextSample?.length ?? 0,
+        rawVisibleContextLength: extractedProfile.visibleProfileContext?.rawVisibleContext?.length ?? 0,
+        visibleTextSampleLimit: PROFILE_TEXT_LIMITS.visibleTextSample
+      });
 
-      const result = await apiRequest<ProfileAnalysis>("/ai/analyze-profile", {
+      const result = await apiRequest<unknown>("/ai/analyze-profile", {
         method: "POST",
         body: { profile: extractedProfile, userSettings: settings }
+      });
+      const normalizedResult = normalizeAnalysisResult(result);
+      console.log("[SidebarApp] Analyze Profile response normalized.", {
+        profileUrl,
+        leadScore: normalizedResult.leadScore,
+        confidence: normalizedResult.confidence,
+        positiveSignals: normalizedResult.positiveSignals.length,
+        negativeSignals: normalizedResult.negativeSignals.length,
+        missingInformation: normalizedResult.missingInformation.length,
+        riskWarnings: normalizedResult.riskWarnings.length,
+        dmVariants: normalizedResult.dmVariants.length
       });
 
       if (activeProfileUrlRef.current !== profileUrl || analysisRequestIdRef.current !== requestId) {
         return;
       }
 
-      setAnalysis(result);
+      setAnalysis(normalizedResult);
       setStatus("analysis_complete");
-      setNextAction(result.recommendedAction);
-      setMessage("Profile analysis is ready.");
+      setNextAction(normalizedResult.recommendedNextAction || normalizedResult.recommendedAction);
+      setMessage(normalizedResult.dmVariants.length ? "Profile analysis is ready." : "Profile analysis is ready. DM variants could not be generated. Please try again.");
 
       if (!isBetaProLicenseActive(licenseState)) {
         setDailyUsage(await incrementDailyUsage("profileAnalyses"));
@@ -389,7 +592,7 @@ export function SidebarApp() {
       return;
     }
 
-    if (!profile || !analysis) {
+    if (!profile || !renderedAnalysis) {
       setStatus("error");
       setMessage("Analyze the profile before generating a message.");
       return;
@@ -410,7 +613,7 @@ export function SidebarApp() {
 
       const result = await apiRequest<GeneratedDm>("/ai/generate-dm", {
         method: "POST",
-        body: { profile, analysis, messageType, userSettings: settings }
+        body: { profile, analysis: renderedAnalysis, messageType, userSettings: settings }
       });
 
       if (activeProfileUrlRef.current !== profileUrl || dmRequestIdRef.current !== requestId) {
@@ -449,19 +652,39 @@ export function SidebarApp() {
     }
   }
 
+  async function copyDmVariant(variant: DmVariant) {
+    try {
+      await copyText(variant.text);
+      setStatus("success");
+      setLocalActionStatus({ type: "success", message: `${variant.label} copied.` });
+    } catch {
+      setStatus("error");
+      setLocalActionStatus({ type: "error", message: "The message could not be copied. Please select the text and copy it manually." });
+    }
+  }
+
   async function addToHubSpot() {
     if (!ensurePlanAccess("add_to_hubspot", "bottom")) {
       return;
     }
 
-    if (!profile || !analysis) {
+    if (!profile || !renderedAnalysis) {
       setStatus("error");
       setLocalActionStatus({ type: "error", message: "Analyze the profile before adding it to HubSpot." });
       return;
     }
 
+    const preflightError = hubSpotPreflightError(profile);
+    if (preflightError) {
+      setCrmStatus("Sync blocked");
+      setStatus("error");
+      setLocalActionStatus({ type: "error", message: preflightError });
+      return;
+    }
+
     try {
       setStatus("syncing_hubspot");
+      setPendingHubSpotAction("contact");
       setMessage(null);
       setLocalActionStatus(null);
       setUpgradeMessage(null);
@@ -469,18 +692,23 @@ export function SidebarApp() {
 
       const result = await apiRequest<HubSpotSyncResult>("/hubspot/upsert-contact", {
         method: "POST",
-        body: { profile, analysis, userSettings: settings }
+        body: { profile, analysis: renderedAnalysis, generatedDm: visibleGeneratedDm ?? undefined, userSettings: settings }
       });
 
       setContactId(result.contactId);
       setSyncedProfileUrl(profile.profileUrl);
       setCrmStatus(result.created ? "Created in HubSpot" : "Updated in HubSpot");
       setStatus("success");
-      setLocalActionStatus(localActionStatusForHubSpotSync(result.created));
+      setLocalActionStatus({
+        type: "success",
+        message: result.message ?? localActionStatusForHubSpotSync(result.created).message
+      });
     } catch (error) {
       setCrmStatus("Sync failed");
       setStatus("error");
       setLocalActionStatus({ type: "error", message: friendlyError(error) });
+    } finally {
+      setPendingHubSpotAction(null);
     }
   }
 
@@ -489,7 +717,7 @@ export function SidebarApp() {
       return;
     }
 
-    if (!profile || !analysis || !contactId) {
+    if (!profile || !renderedAnalysis || !contactId) {
       setStatus("error");
       setLocalActionStatus({ type: "error", message: "Add or update the contact in HubSpot before creating a note." });
       return;
@@ -497,12 +725,13 @@ export function SidebarApp() {
 
     try {
       setStatus("syncing_hubspot");
+      setPendingHubSpotAction("note");
       setMessage(null);
       setLocalActionStatus(null);
       setUpgradeMessage(null);
       await apiRequest<{ noteId: string }>("/hubspot/create-note", {
         method: "POST",
-        body: { contactId, profile, analysis, dmMessage: visibleGeneratedDm?.message }
+        body: { contactId, profile, analysis: renderedAnalysis, dmMessage: visibleGeneratedDm?.message, userSettings: settings }
       });
       setNoteStatus("created");
       setStatus("success");
@@ -510,6 +739,8 @@ export function SidebarApp() {
     } catch (error) {
       setStatus("error");
       setLocalActionStatus({ type: "error", message: friendlyError(error) });
+    } finally {
+      setPendingHubSpotAction(null);
     }
   }
 
@@ -520,19 +751,27 @@ export function SidebarApp() {
 
     if (!contactId) {
       setStatus("error");
-      setLocalActionStatus({ type: "error", message: "Add or update the contact in HubSpot before creating a follow-up task." });
+      setLocalActionStatus({ type: "error", message: "Please add this profile to HubSpot before creating a follow-up task." });
+      return;
+    }
+
+    if (!profile) {
+      setStatus("error");
+      setLocalActionStatus({ type: "error", message: "Profile information is missing. Please analyze the LinkedIn profile again." });
       return;
     }
 
     try {
       setStatus("syncing_hubspot");
+      setPendingHubSpotAction("task");
       setMessage(null);
       setLocalActionStatus(null);
       setUpgradeMessage(null);
-      await apiRequest<{ taskId: string; fallback: string }>("/hubspot/create-task", {
+      const result = await apiRequest<FollowUpTaskResult>("/hubspot/create-task", {
         method: "POST",
         body: {
           contactId,
+          profile,
           daysFromNow: settings.defaultFollowUpDays,
           taskTitle: "Follow up from LinkedIn profile review",
           taskBody: visibleGeneratedDm?.message
@@ -542,10 +781,12 @@ export function SidebarApp() {
       });
       setTaskStatus("created");
       setStatus("success");
-      setLocalActionStatus({ type: "success", message: "Follow-up task created." });
+      setLocalActionStatus(localActionStatusForFollowUpTaskResult(result.fallback));
     } catch (error) {
       setStatus("error");
       setLocalActionStatus({ type: "error", message: friendlyError(error) });
+    } finally {
+      setPendingHubSpotAction(null);
     }
   }
 
@@ -558,7 +799,7 @@ export function SidebarApp() {
         </div>
         <div className="lhai-header-badges">
           <span className={`lhai-plan-badge ${isBetaPro ? "lhai-plan-badge-pro" : "lhai-plan-badge-free"}`}>{currentPlanLabel}</span>
-          {isBetaPro ? <span className="lhai-pro-active">Beta Pro active</span> : null}
+          {isBetaPro ? <span className="lhai-pro-active">{currentPlanLabel} active</span> : null}
           <span className={`lhai-status lhai-status-${status}`}>
             <span className="lhai-status-dot" />
             {statusLabel(status)}
@@ -597,7 +838,7 @@ export function SidebarApp() {
                 isConnectionMessageLocked ? " lhai-button-locked" : ""
               }`}
               type="button"
-              disabled={isBusy || (!isConnectionMessageLocked && !analysis)}
+              disabled={isBusy || (!isConnectionMessageLocked && !renderedAnalysis)}
               aria-disabled={isConnectionMessageLocked}
               aria-busy={isGeneratingDm}
               title={isConnectionMessageLocked ? "Available in Beta Pro" : undefined}
@@ -610,7 +851,7 @@ export function SidebarApp() {
                 isFirstDmBlockedByPlan ? " lhai-button-locked" : ""
               }`}
               type="button"
-              disabled={isBusy || (!isFirstDmBlockedByPlan && !analysis)}
+              disabled={isBusy || (!isFirstDmBlockedByPlan && !renderedAnalysis)}
               aria-disabled={isFirstDmBlockedByPlan}
               aria-busy={isGeneratingDm}
               title={isFirstDmBlockedByPlan ? firstDmAccess.message : undefined}
@@ -621,7 +862,7 @@ export function SidebarApp() {
             <button
               className={`lhai-button${isGeneratingDm ? " lhai-button-loading" : ""}${isFollowUpLocked ? " lhai-button-locked" : ""}`}
               type="button"
-              disabled={isBusy || (!isFollowUpLocked && !analysis)}
+              disabled={isBusy || (!isFollowUpLocked && !renderedAnalysis)}
               aria-disabled={isFollowUpLocked}
               aria-busy={isGeneratingDm}
               title={isFollowUpLocked ? "Available in Beta Pro" : undefined}
@@ -635,7 +876,7 @@ export function SidebarApp() {
           <div className="lhai-license-panel" aria-label="License activation">
             <div className="lhai-section-heading">
               <span className="lhai-label">License</span>
-              {isBetaPro ? <span className="lhai-pill lhai-pill-success">Beta Pro active</span> : null}
+              {isBetaPro ? <span className="lhai-pill lhai-pill-success">{currentPlanLabel} active</span> : null}
             </div>
             <label className="lhai-license-label" htmlFor="lhai-license-key">
               License key
@@ -651,7 +892,7 @@ export function SidebarApp() {
             />
             <div className="lhai-license-actions">
               <button className="lhai-button lhai-button-primary" type="button" disabled={isLicenseBusy} onClick={() => void handleActivateLicense()}>
-                {isLicenseBusy ? "Checking..." : "Activate license"}
+                {isLicenseBusy ? "Activating..." : "Activate license"}
               </button>
               <button className="lhai-button" type="button" disabled={isLicenseBusy} onClick={() => void handleRemoveLicense()}>
                 Remove license
@@ -673,33 +914,184 @@ export function SidebarApp() {
           <p className="lhai-profile-name">{sectionValue(profile?.fullName, "No profile analyzed yet.")}</p>
           <p className="lhai-value lhai-muted">{sectionValue(profile?.headline, "Headline will appear after analysis.")}</p>
           <p className="lhai-value">{sectionValue(profile?.companyName, "Company not detected yet.")}</p>
+          <p className="lhai-value lhai-muted">{sectionValue(profile?.location, "Location not detected yet.")}</p>
+          {profile?.profileUrl ? <p className="lhai-value lhai-muted">{profile.profileUrl}</p> : null}
+        </section>
+
+        <section className="lhai-section lhai-card lhai-icp-card" aria-label="Scoring against ICP">
+          <div className="lhai-section-heading">
+            <span className="lhai-label">Scoring against ICP</span>
+            <button className="lhai-mini-button" type="button" onClick={() => void openOptionsPage()}>
+              Edit ICP
+            </button>
+          </div>
+          <p className="lhai-helper-text">The lead score and DM drafts use these settings.</p>
+          {icpLoadFailed ? (
+            <div className="lhai-alert lhai-alert-warning">ICP settings could not be loaded. Using defaults.</div>
+          ) : icpUsingDefaults ? (
+            <div className="lhai-alert lhai-alert-warning">Using default ICP. Customize it for better scoring and DM drafts.</div>
+          ) : null}
+          <div className="lhai-icp-list">
+            {[...primaryIcpSummaryFields, ...detailedIcpSummaryFields].map((field) => (
+              <div className="lhai-icp-row" key={field.label}>
+                <span>{field.label}:</span>
+                <strong title={field.value}>{field.value}</strong>
+              </div>
+            ))}
+          </div>
+          <button className="lhai-link-button" type="button" onClick={() => setShowIcpDetails((value) => !value)}>
+            {showIcpDetails ? "Hide details" : "Show details"}
+          </button>
+        </section>
+
+        <section className="lhai-section lhai-card lhai-context-card" aria-label="Messaging context">
+          <div className="lhai-section-heading">
+            <span className="lhai-label">Messaging context</span>
+            <button className="lhai-mini-button" type="button" onClick={() => void openOptionsPage()}>
+              Edit context
+            </button>
+          </div>
+          <p className="lhai-helper-text">Used to tailor the score, outreach angle, and DM drafts.</p>
+          <span
+            className={`lhai-pill ${
+              currentSellerContextStatus === "Custom context"
+                ? "lhai-pill-success"
+                : currentSellerContextStatus === "Incomplete context"
+                  ? "lhai-pill-warning"
+                  : ""
+            }`}
+          >
+            {currentSellerContextStatus}
+          </span>
+          <div className="lhai-icp-list">
+            {[...primarySellerContextFields, ...detailedSellerContextFields].map((field) => (
+              <div className="lhai-icp-row" key={field.label}>
+                <span>{field.label}:</span>
+                <strong title={field.value}>{field.value}</strong>
+              </div>
+            ))}
+          </div>
+          <button className="lhai-link-button" type="button" onClick={() => setShowSellerContextDetails((value) => !value)}>
+            {showSellerContextDetails ? "Hide details" : "Show details"}
+          </button>
+        </section>
+
+        <section className="lhai-section lhai-card">
+          <div className="lhai-section-heading">
+            <span className="lhai-label">Profile Context</span>
+            <span className="lhai-pill">Context: {titleCaseConfidence(profile?.contextConfidence)}</span>
+          </div>
+          <p className="lhai-value">{compactSnippet(profile?.about, "About section not detected yet.")}</p>
+          <p className="lhai-value lhai-muted">
+            {compactSnippet(profile?.currentRoleDescription, "Current role snippet will appear here when visible.")}
+          </p>
+          {extractionWarnings.length ? (
+            <div className="lhai-alert lhai-alert-warning">{extractionWarnings[0]}</div>
+          ) : null}
         </section>
 
         <section className="lhai-section lhai-card">
           <div className="lhai-grid">
             <div className="lhai-metric">
-              <span className="lhai-label">Lead Score</span>
-              <span className={`lhai-score${analysis?.confidence === "low" ? " lhai-score-unknown" : ""}`}>{leadScoreDisplay}</span>
-              <span className="lhai-score-subtext">{analysis?.confidence === "low" ? "Low confidence" : scoreBand(analysis?.leadScore)}</span>
+              <span className="lhai-label">ICP Fit Score</span>
+              <span className={`lhai-score${renderedAnalysis?.confidence === "low" ? " lhai-score-unknown" : ""}`}>{leadScoreDisplay}</span>
+              <span className="lhai-score-subtext">
+                {renderedAnalysis?.fitLabel ?? (renderedAnalysis?.confidence === "low" ? "Low confidence" : scoreBand(renderedAnalysis?.leadScore))}
+              </span>
             </div>
             <div className="lhai-metric">
               <span className="lhai-label">CRM Sync Status</span>
               <p className="lhai-value">{crmStatus}</p>
             </div>
           </div>
+          {renderedAnalysis ? (
+            <div className="lhai-stack">
+              <p className="lhai-value lhai-muted">Confidence: {titleCaseConfidence(renderedAnalysis.confidence)}</p>
+              {positiveSignals.length ? (
+                <>
+                  <span className="lhai-label">Positive Signals</span>
+                  <ul className="lhai-list">
+                    {positiveSignals.map((signal) => (
+                      <li key={signal}>{signal}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              {negativeSignals.length ? (
+                <>
+                  <span className="lhai-label">Negative Signals</span>
+                  <ul className="lhai-list">
+                    {negativeSignals.map((signal) => (
+                      <li key={signal}>{signal}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              {missingInformation.length ? (
+                <>
+                  <span className="lhai-label">Missing Information</span>
+                  <ul className="lhai-list">
+                    {missingInformation.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              {riskWarnings.length ? (
+                <>
+                  <span className="lhai-label">Risks</span>
+                  <ul className="lhai-list">
+                    {riskWarnings.map((risk) => (
+                      <li key={risk}>{risk}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="lhai-evidence-panel">
+            <div className="lhai-section-heading">
+              <span className="lhai-label">Why this score?</span>
+              {scoreEvidence.length > 6 ? (
+                <button className="lhai-mini-button" type="button" onClick={() => setShowAllScoreEvidence((value) => !value)}>
+                  {showAllScoreEvidence ? "Show less" : "Show more"}
+                </button>
+              ) : null}
+            </div>
+            {renderedAnalysis ? (
+              <>
+                <div className="lhai-evidence-meta">
+                  <span>Analysis depth: {renderedAnalysis.scoringMetadata.analysisDepth}</span>
+                  <span>Facts: {renderedAnalysis.scoringMetadata.factsUsedCount}</span>
+                  <span>Inferences: {renderedAnalysis.scoringMetadata.inferencesUsedCount}</span>
+                  <span>Missing: {renderedAnalysis.scoringMetadata.missingCriteriaCount}</span>
+                  <span>Disqualifiers: {renderedAnalysis.scoringMetadata.disqualifierCount}</span>
+                </div>
+                <p className="lhai-value lhai-muted">{confidenceExplanation(renderedAnalysis)}</p>
+                <EvidenceGroup title="Confirmed matches" items={evidenceGroup(visibleScoreEvidence, "positive", "fact")} />
+                <EvidenceGroup title="Confirmed mismatches" items={evidenceGroup(visibleScoreEvidence, "negative", "fact")} />
+                <EvidenceGroup title="Missing information" items={evidenceGroup(visibleScoreEvidence, "missing")} />
+                <EvidenceGroup title="Disqualifiers" items={evidenceGroup(visibleScoreEvidence, "disqualifier")} />
+                <EvidenceGroup title="AI inferences" items={visibleScoreEvidence.filter((item) => item.basis === "inference")} inference />
+                {!scoreEvidence.length ? <p className="lhai-value lhai-muted">No score evidence was returned. Research first before outreach.</p> : null}
+              </>
+            ) : (
+              <p className="lhai-value lhai-muted">Analyze this profile to see visible facts, missing criteria, and AI inferences behind the score.</p>
+            )}
+          </div>
           {showScoringSettingsWarning ? <div className="lhai-alert lhai-alert-warning">{SCORING_SETTINGS_WARNING}</div> : null}
         </section>
 
         <section className="lhai-section lhai-card">
           <span className="lhai-label">Persona</span>
-          <p className="lhai-value">{analysis?.persona ?? "Analyze this profile to identify the likely buyer persona."}</p>
+          <p className="lhai-value">{renderedAnalysis?.persona || "Analyze this profile to identify the likely buyer persona."}</p>
         </section>
 
         <section className="lhai-section lhai-card">
           <span className="lhai-label">Pain Points</span>
-          {analysis?.painPoints.length ? (
+          {painPoints.length ? (
             <ul className="lhai-list">
-              {analysis.painPoints.map((point) => (
+              {painPoints.map((point) => (
                 <li key={point}>{point}</li>
               ))}
             </ul>
@@ -710,7 +1102,66 @@ export function SidebarApp() {
 
         <section className="lhai-section lhai-card">
           <span className="lhai-label">Icebreaker</span>
-          <p className="lhai-value">{analysis?.icebreaker ?? "A short, profile-based opener will appear here."}</p>
+          <p className="lhai-value">{renderedAnalysis?.icebreaker || "A short, profile-based opener will appear here."}</p>
+        </section>
+
+        <section className="lhai-section lhai-card">
+          <span className="lhai-label">Outreach Strategy</span>
+          <p className="lhai-value">{renderedAnalysis?.recommendedOutreachAngle || "Analyze this profile to get a recommended angle."}</p>
+          <p className="lhai-value lhai-muted">{renderedAnalysis?.whyThisAngle || "The AI will explain why this angle is safest."}</p>
+          {whatToAvoid.length ? (
+            <>
+              <span className="lhai-label">What To Avoid</span>
+              <ul className="lhai-list">
+                {whatToAvoid.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </section>
+
+        <section className="lhai-section lhai-card lhai-dm-section">
+          <div className="lhai-section-heading">
+            <span className="lhai-label">DM Drafts</span>
+            <span className="lhai-pill">3 variants</span>
+          </div>
+          {dmVariants.length ? (
+            <div className="lhai-variant-list">
+              {dmVariants.map((variant) => (
+                <article className="lhai-variant" key={variant.label}>
+                  <div className="lhai-section-heading">
+                    <span className="lhai-label">{variant.label}</span>
+                    <button className="lhai-mini-button" type="button" onClick={() => void copyDmVariant(variant)}>
+                      Copy
+                    </button>
+                  </div>
+                  <p className="lhai-value lhai-muted">{variant.useCase}</p>
+                  <p className="lhai-value">{variant.text}</p>
+                  <p className="lhai-value lhai-muted">Risk: {titleCaseConfidence(variant.riskLevel)}</p>
+                  {variant.personalizationUsed.length ? (
+                    <p className="lhai-value lhai-muted">Personalization: {variant.personalizationUsed.join("; ")}</p>
+                  ) : null}
+                  {variant.offerContextUsed.length ? (
+                    <p className="lhai-value lhai-muted">Offer context: {variant.offerContextUsed.join("; ")}</p>
+                  ) : null}
+                  {variant.factsUsed.length ? (
+                    <p className="lhai-value lhai-muted">Facts used: {variant.factsUsed.join("; ")}</p>
+                  ) : null}
+                  {variant.inferencesUsed.length ? (
+                    <p className="lhai-value lhai-muted">AI inferences: {variant.inferencesUsed.join("; ")}</p>
+                  ) : null}
+                  {variant.warnings.length ? (
+                    <p className="lhai-value lhai-muted">Warnings: {variant.warnings.join("; ")}</p>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="lhai-dm lhai-empty-state">
+              <p className="lhai-value">{renderedAnalysis ? "DM variants could not be generated. Please try Analyze Profile again." : "Analyze this profile to generate three DM variants."}</p>
+            </div>
+          )}
         </section>
 
         <section className="lhai-section lhai-card lhai-dm-section">
@@ -729,9 +1180,9 @@ export function SidebarApp() {
               <span>Spam risk: {visibleGeneratedDm.spamRisk}</span>
             </div>
           ) : null}
-          {visibleGeneratedDm?.warnings.length ? (
+          {generatedDmWarnings.length ? (
             <ul className="lhai-list">
-              {visibleGeneratedDm.warnings.map((warning) => (
+              {generatedDmWarnings.map((warning) => (
                 <li key={warning}>{warning}</li>
               ))}
             </ul>
@@ -751,7 +1202,7 @@ export function SidebarApp() {
             <button
               className={`lhai-button${isSyncingHubSpot ? " lhai-button-loading" : ""}${areHubSpotActionsLocked ? " lhai-button-locked" : ""}`}
               type="button"
-              disabled={isBusy || (!areHubSpotActionsLocked && !analysis)}
+              disabled={isBusy || (!areHubSpotActionsLocked && !renderedAnalysis)}
               aria-disabled={areHubSpotActionsLocked}
               aria-busy={isSyncingHubSpot}
               title={areHubSpotActionsLocked ? "Available in Beta Pro" : undefined}
@@ -779,7 +1230,7 @@ export function SidebarApp() {
               title={areHubSpotActionsLocked ? "Available in Beta Pro" : undefined}
               onClick={() => void createFollowUpTask()}
             >
-              {lockedButtonContent("Create Follow-up Task", areHubSpotActionsLocked)}
+              {lockedButtonContent(createFollowUpTaskButtonLabel, areHubSpotActionsLocked)}
             </button>
           </div>
           {localActionStatus ? (

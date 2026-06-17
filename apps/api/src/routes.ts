@@ -5,18 +5,38 @@ import { z } from "zod";
 import {
   AnalyzeProfileRequestSchema,
   CreateNoteRequestSchema,
-  CreateTaskRequestSchema,
   GenerateDmRequestSchema,
   LicenseVerifyRequestSchema,
-  UpsertContactRequestSchema
+  UpsertContactRequestSchema,
+  compactLinkedInProfile,
+  validateLinkedInProfileIdentity
 } from "@linkedin-hubspot-ai/shared";
-import { HubSpotService } from "./services/hubspot.service.js";
+import {
+  getHubSpotInvalidPropertyNames,
+  HubSpotService,
+  isHubSpotInvalidPropertyError
+} from "./services/hubspot.service.js";
 import { sendLicenseEmailWebhook } from "./services/license-email.service.js";
 import { createLicenseRepository, type LicenseRecord } from "./services/license.repository.js";
 import { verifyBetaProLicenseKey } from "./services/license.service.js";
 import { OpenAiService } from "./services/openai.service.js";
 import { StripeLicenseService } from "./services/stripe-license.service.js";
 import { AppError } from "./utils/errors.js";
+import {
+  buildFollowUpTaskBody,
+  buildFollowUpTaskFallbackNoteBody,
+  mapFollowUpTaskError,
+  sanitizeFollowUpTaskRequestShape,
+  shouldCreateFollowUpFallbackNote,
+  summarizeHubSpotError,
+  validateFollowUpTaskRequest
+} from "./utils/followUpTask.js";
+import {
+  buildHubSpotAnalysisNoteBody,
+  buildHubSpotContactSyncPayload,
+  getConfiguredHubSpotAiPropertyMapping,
+  removeHubSpotProperties
+} from "./utils/hubspotMapping.js";
 
 const router = Router();
 const openAiService = new OpenAiService();
@@ -35,38 +55,6 @@ function asyncHandler(handler: (req: Request, res: Response) => Promise<void>): 
   return (req: Request, res: Response, next: NextFunction) => {
     void handler(req, res).catch(next);
   };
-}
-
-function buildAnalysisNoteBody(
-  profileName: string,
-  profileUrl: string,
-  persona: string,
-  leadScore: number,
-  painPoints: string[],
-  icebreaker: string,
-  recommendedAction: string,
-  dmMessage?: string
-): string {
-  const safeDm = dmMessage ? `<br><strong>Suggested DM:</strong><br>${escapeHtml(dmMessage)}` : "";
-  return [
-    `<strong>AI Summary for ${escapeHtml(profileName)}</strong>`,
-    `<br><strong>LinkedIn:</strong> ${escapeHtml(profileUrl)}`,
-    `<br><strong>Lead score:</strong> ${leadScore}`,
-    `<br><strong>Persona:</strong> ${escapeHtml(persona)}`,
-    `<br><strong>Pain points:</strong><br>${painPoints.map((point) => `- ${escapeHtml(point)}`).join("<br>")}`,
-    `<br><strong>Icebreaker:</strong> ${escapeHtml(icebreaker)}`,
-    `<br><strong>Recommended action:</strong> ${escapeHtml(recommendedAction)}`,
-    safeDm
-  ].join("");
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 
 router.get("/health", (_req, res) => {
@@ -95,7 +83,8 @@ router.post(
         maskedLicenseKey: maskLicenseKey(licenseKey),
         licenseExists: result.status !== "invalid",
         status: result.status,
-        betaProGranted: result.valid && result.plan === "beta_pro" && result.status === "active"
+        source: result.source,
+        betaProGranted: result.valid && (result.plan === "beta_pro" || result.plan === "pro") && result.status === "active"
       });
       res.json(result);
     } catch (error) {
@@ -140,7 +129,7 @@ router.post(
 router.post(
   "/ai/analyze-profile",
   asyncHandler(async (req, res) => {
-    const { profile, userSettings } = AnalyzeProfileRequestSchema.parse(req.body);
+    const { profile, userSettings } = AnalyzeProfileRequestSchema.parse(compactProfileRequestBody(req.body));
     const analysis = await openAiService.analyzeProfile(profile, userSettings);
     res.json(analysis);
   })
@@ -149,7 +138,7 @@ router.post(
 router.post(
   "/ai/generate-dm",
   asyncHandler(async (req, res) => {
-    const { profile, analysis, messageType, userSettings } = GenerateDmRequestSchema.parse(req.body);
+    const { profile, analysis, messageType, userSettings } = GenerateDmRequestSchema.parse(compactProfileRequestBody(req.body));
     const dm = await openAiService.generateDm(profile, analysis, messageType, userSettings);
     res.json(dm);
   })
@@ -158,35 +147,103 @@ router.post(
 router.post(
   "/hubspot/upsert-contact",
   asyncHandler(async (req, res) => {
-    const { profile, userSettings } = UpsertContactRequestSchema.parse(req.body);
-    const lifecycleStage = userSettings?.defaultHubSpotLifecycleStage;
-    const existingContactId = await hubSpotService.searchContactByLinkedInUrl(profile.profileUrl);
-
-    if (existingContactId) {
-      const contactId = await hubSpotService.updateContact(existingContactId, profile, lifecycleStage);
-      res.json({ contactId, created: false, updated: true });
-      return;
+    const { profile, analysis, generatedDm, userSettings } = UpsertContactRequestSchema.parse(compactProfileRequestBody(req.body));
+    const validation = validateLinkedInProfileIdentity(profile);
+    if (!validation.ok) {
+      throw new AppError(400, validation.message);
     }
 
-    const contactId = await hubSpotService.createContact(profile, lifecycleStage);
-    res.json({ contactId, created: true, updated: false });
+    const lifecycleStage = userSettings?.defaultHubSpotLifecycleStage;
+    const aiPropertyMapping = getConfiguredHubSpotAiPropertyMapping();
+    const syncPayload = buildHubSpotContactSyncPayload({
+      profile,
+      analysis,
+      generatedDm,
+      lifecycleStage,
+      aiPropertyMapping
+    });
+
+    console.log("[hubspot-contact] Request received.", {
+      hasFullName: profile.fullName.trim().length > 0,
+      hasProfileUrl: profile.profileUrl.trim().length > 0,
+      hasLeadScore: typeof analysis.leadScore === "number",
+      hasGeneratedDm: Boolean(generatedDm?.message)
+    });
+    console.log("[hubspot-contact] Properties prepared.", {
+      standard: syncPayload.standardPropertyKeys,
+      custom: syncPayload.customPropertyKeys
+    });
+    for (const skippedProperty of syncPayload.skippedProperties) {
+      console.log("[hubspot-contact] Skipping property.", skippedProperty);
+    }
+
+    const existingContactId = await hubSpotService.searchContactByLinkedInUrl(profile.profileUrl);
+    let contactId: string;
+    let retriedWithoutCustomProperties = false;
+
+    try {
+      contactId = existingContactId
+        ? await hubSpotService.updateContactWithProperties(existingContactId, syncPayload.properties)
+        : await hubSpotService.createContactWithProperties(syncPayload.properties);
+    } catch (error) {
+      if (!syncPayload.customPropertyKeys.length || !isHubSpotInvalidPropertyError(error)) {
+        throw error;
+      }
+
+      retriedWithoutCustomProperties = true;
+      console.warn("[hubspot-contact] Optional custom properties rejected by HubSpot. Retrying with standard properties only.", {
+        invalidProperties: getHubSpotInvalidPropertyNames(error),
+        removedCustomProperties: syncPayload.customPropertyKeys
+      });
+      const standardOnlyProperties = removeHubSpotProperties(syncPayload.properties, syncPayload.customPropertyKeys);
+      contactId = existingContactId
+        ? await hubSpotService.updateContactWithProperties(existingContactId, standardOnlyProperties)
+        : await hubSpotService.createContactWithProperties(standardOnlyProperties);
+    }
+
+    const noteBody = buildHubSpotAnalysisNoteBody({ profile, analysis, generatedDm, userSettings });
+    const noteId = await hubSpotService.createNoteForContact(contactId, noteBody);
+    const created = !existingContactId;
+    const partialPropertySync =
+      retriedWithoutCustomProperties ||
+      syncPayload.skippedProperties.some((property) => property.reason === "custom property not configured");
+    const skippedProperties = [
+      ...syncPayload.skippedProperties.map((property) =>
+        property.property ? `${property.property}: ${property.reason}` : `${property.field}: ${property.reason}`
+      ),
+      ...(retriedWithoutCustomProperties
+        ? syncPayload.customPropertyKeys.map((property) => `${property}: HubSpot rejected optional custom property`)
+        : [])
+    ];
+
+    console.log("[hubspot-contact] AI details saved as note.", {
+      contactId: maskHubSpotId(contactId),
+      noteId,
+      partialPropertySync
+    });
+
+    res.json({
+      contactId,
+      created,
+      updated: Boolean(existingContactId),
+      noteId,
+      partialPropertySync,
+      skippedProperties,
+      message: hubSpotSyncMessage(created, partialPropertySync)
+    });
   })
 );
 
 router.post(
   "/hubspot/create-note",
   asyncHandler(async (req, res) => {
-    const { contactId, profile, analysis, dmMessage } = CreateNoteRequestSchema.parse(req.body);
-    const noteBody = buildAnalysisNoteBody(
-      profile.fullName,
-      profile.profileUrl,
-      analysis.persona,
-      analysis.leadScore,
-      analysis.painPoints,
-      analysis.icebreaker,
-      analysis.recommendedAction,
-      dmMessage
-    );
+    const { contactId, profile, analysis, dmMessage, userSettings } = CreateNoteRequestSchema.parse(compactProfileRequestBody(req.body));
+    const noteBody = buildHubSpotAnalysisNoteBody({
+      profile,
+      analysis,
+      generatedDm: dmMessage ? { message: dmMessage } : undefined,
+      userSettings
+    });
     const noteId = await hubSpotService.createNoteForContact(contactId, noteBody);
     res.json({ noteId });
   })
@@ -195,10 +252,77 @@ router.post(
 router.post(
   "/hubspot/create-task",
   asyncHandler(async (req, res) => {
-    const { contactId, daysFromNow, taskTitle, taskBody } = CreateTaskRequestSchema.parse(req.body);
-    const dueDate = new Date(Date.now() + daysFromNow * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const taskId = await hubSpotService.createFollowUpTask(contactId, taskTitle, taskBody, dueDate);
-    res.json({ taskId, fallback: "created_as_note" });
+    console.log("[follow-up-task] Request received.", sanitizeFollowUpTaskRequestShape(req.body));
+
+    let taskRequest: ReturnType<typeof validateFollowUpTaskRequest>;
+    try {
+      taskRequest = validateFollowUpTaskRequest(compactProfileRequestBody(req.body));
+    } catch (error) {
+      const mappedError = error instanceof AppError ? error : mapFollowUpTaskError(error);
+      console.error("[follow-up-task] Request validation failed.", {
+        status: mappedError.statusCode,
+        code: mappedError.code,
+        message: mappedError.message
+      });
+      throw mappedError;
+    }
+
+    console.log("[follow-up-task] Creating HubSpot task.", {
+      contactId: maskHubSpotId(taskRequest.contactId),
+      hasProfileUrl: taskRequest.profileUrl.length > 0,
+      dueAt: taskRequest.dueAt,
+      dueAtType: typeof taskRequest.dueAt,
+      hasTaskTitle: taskRequest.taskTitle.length > 0,
+      hasTaskBody: taskRequest.taskBody.length > 0,
+      hasOwnerId: false
+    });
+
+    try {
+      const taskBody = buildFollowUpTaskBody(taskRequest.taskBody, taskRequest.profileUrl);
+      const taskId = await hubSpotService.createFollowUpTask(taskRequest.contactId, taskRequest.taskTitle, taskBody, taskRequest.dueAt);
+      console.log("[follow-up-task] Task created.", {
+        taskId,
+        finalStatus: 200
+      });
+      res.json({
+        taskId,
+        fallback: false,
+        createdAs: "task",
+        message: "HubSpot follow-up task created."
+      });
+    } catch (error) {
+      const hubSpotSummary = summarizeHubSpotError(error);
+      console.error("[follow-up-task] HubSpot task API failed.", {
+        status: hubSpotSummary?.status,
+        category: hubSpotSummary?.category,
+        message: hubSpotSummary?.message,
+        path: hubSpotSummary?.path
+      });
+
+      if (shouldCreateFollowUpFallbackNote(error)) {
+        const noteBody = buildFollowUpTaskFallbackNoteBody(taskRequest);
+        const noteId = await hubSpotService.createNoteForContact(taskRequest.contactId, noteBody);
+        console.log("[follow-up-task] Fallback note created.", {
+          noteId,
+          finalStatus: 200
+        });
+        res.json({
+          noteId,
+          fallback: true,
+          createdAs: "note",
+          message: "Follow-up note created because HubSpot task creation is not available."
+        });
+        return;
+      }
+
+      const mappedError = mapFollowUpTaskError(error);
+      console.error("[follow-up-task] Returning structured error response.", {
+        status: mappedError.statusCode,
+        code: mappedError.code,
+        message: mappedError.message
+      });
+      throw mappedError;
+    }
   })
 );
 
@@ -238,6 +362,31 @@ export const stripeWebhookHandler: RequestHandler = (req, res, next) => {
     });
 };
 
+export function compactProfileRequestBody(body: unknown): unknown {
+  if (!isRecord(body) || !isRecord(body.profile)) {
+    return body;
+  }
+
+  return {
+    ...body,
+    profile: compactLinkedInProfile(body.profile)
+  };
+}
+
+function hubSpotSyncMessage(created: boolean, partialPropertySync: boolean): string {
+  if (partialPropertySync) {
+    return created
+      ? "HubSpot contact created. AI details saved as a note because custom HubSpot properties are not configured."
+      : "HubSpot contact updated. AI details saved as a note because custom HubSpot properties are not configured.";
+  }
+
+  return created ? "HubSpot contact created. AI details saved as a note." : "HubSpot contact updated. AI details saved as a note.";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function requireAdminSecret(req: Request, _res: Response, next: NextFunction) {
   const configuredAdminSecret = process.env.ADMIN_SECRET?.trim();
 
@@ -274,10 +423,14 @@ function adminLicenseView(license: LicenseRecord) {
     licenseKey: maskLicenseKey(license.licenseKey),
     plan: license.plan,
     status: license.status,
+    source: license.source,
     stripeCustomerId: license.stripeCustomerId,
     stripeSubscriptionId: license.stripeSubscriptionId,
     stripeCheckoutSessionId: license.stripeCheckoutSessionId,
     currentPeriodEnd: license.currentPeriodEnd,
+    expiresAt: license.expiresAt,
+    revokedAt: license.revokedAt,
+    label: license.label,
     createdAt: license.createdAt,
     updatedAt: license.updatedAt,
     lastEmailSentAt: license.lastEmailSentAt
@@ -287,6 +440,11 @@ function adminLicenseView(license: LicenseRecord) {
 function maskLicenseKey(licenseKey: string): string {
   const lastGroup = licenseKey.trim().split("-").at(-1) ?? "****";
   return `lh-beta-****-****-${lastGroup}`;
+}
+
+function maskHubSpotId(value: string): string {
+  const trimmedValue = value.trim();
+  return trimmedValue.length <= 4 ? "****" : `****${trimmedValue.slice(-4)}`;
 }
 
 export { router };
