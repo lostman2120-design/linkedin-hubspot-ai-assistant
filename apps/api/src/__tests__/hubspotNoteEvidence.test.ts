@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_SELLER_CONTEXT, DEFAULT_USER_SETTINGS } from "@linkedin-hubspot-ai/shared";
 import { buildHubSpotAnalysisNoteBody } from "../utils/hubspotMapping.js";
 
-describe("v0.3 HubSpot analysis note", () => {
-  it("includes ICP, Seller Context summary, score evidence, and DM variants", () => {
+describe("v0.4 HubSpot analysis note", () => {
+  it("formats legacy analysis data with v0.4 decision, strategy, evidence, and metadata sections", () => {
     const note = buildHubSpotAnalysisNoteBody({
       profile: {
         fullName: "Avery Johnson",
@@ -97,7 +97,14 @@ describe("v0.3 HubSpot analysis note", () => {
     expect(note).toContain("AI inferences");
     expect(note).toContain("RevOps Lead at Example Corp");
     expect(note).toContain("DM drafts");
-    expect(note).toContain("v0.3.0");
+    expect(note).toContain("Recommended Action");
+    expect(note).toContain("Outreach Strategy");
+    expect(note).toContain("Why relevant");
+    expect(note).toContain("Best angle");
+    expect(note).toContain("Pain hypothesis");
+    expect(note).toContain("What to avoid");
+    expect(note).toContain("Suggested CTA");
+    expect(note).toContain("Tool:</strong> LinkedIn to HubSpot AI Assistant v0.4.0");
     expect(note).not.toContain("Guaranteed revenue");
   });
 });

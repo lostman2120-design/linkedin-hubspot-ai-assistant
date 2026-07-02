@@ -1,5 +1,10 @@
 import type { GeneratedDm, LinkedInProfile, ProfileAnalysis, ScoreEvidence, UserSettings } from "@linkedin-hubspot-ai/shared";
-import { UNABLE_TO_EXTRACT_FIELD, getProfileUrl, validateLinkedInProfileIdentity } from "@linkedin-hubspot-ai/shared";
+import {
+  UNABLE_TO_EXTRACT_FIELD,
+  getProfileUrl,
+  normalizeRecommendedAction,
+  validateLinkedInProfileIdentity
+} from "@linkedin-hubspot-ai/shared";
 import { splitFullName } from "./name.js";
 
 export type HubSpotContactProperties = Record<string, string>;
@@ -17,17 +22,42 @@ export type HubSpotAiPropertyField =
 export type HubSpotAiPropertyMapping = Partial<Record<HubSpotAiPropertyField, string>>;
 
 export type SkippedHubSpotProperty = {
-  field: HubSpotAiPropertyField;
+  field: string;
   property?: string;
   reason: string;
 };
 
 export type HubSpotContactSyncPayload = {
   properties: HubSpotContactProperties;
+  standardProperties: HubSpotContactProperties;
+  customProperties: HubSpotContactProperties;
   standardPropertyKeys: string[];
   customPropertyKeys: string[];
+  lhaPropertyKeys: string[];
   skippedProperties: SkippedHubSpotProperty[];
 };
+
+export type HubSpotContactPropertyDefinition = {
+  name: string;
+  label: string;
+  type: "string" | "number" | "datetime";
+  fieldType: "text" | "textarea" | "number" | "date";
+  groupName: "contactinformation";
+  description: string;
+};
+
+export const LHA_CONTACT_PROPERTY_DEFINITIONS: HubSpotContactPropertyDefinition[] = [
+  propertyDefinition("lha_icp_fit_score", "LHA ICP Fit Score", "number", "number"),
+  propertyDefinition("lha_icp_fit_label", "LHA ICP Fit Label", "string", "text"),
+  propertyDefinition("lha_recommended_action", "LHA Recommended Action", "string", "text"),
+  propertyDefinition("lha_confidence", "LHA Confidence", "number", "number"),
+  propertyDefinition("lha_outreach_angle", "LHA Outreach Angle", "string", "textarea"),
+  propertyDefinition("lha_main_reason", "LHA Main Reason", "string", "textarea"),
+  propertyDefinition("lha_main_risk", "LHA Main Risk", "string", "textarea"),
+  propertyDefinition("lha_missing_info", "LHA Missing Info", "string", "textarea"),
+  propertyDefinition("lha_last_analyzed_at", "LHA Last Analyzed At", "datetime", "date"),
+  propertyDefinition("lha_source", "LHA Source", "string", "text")
+];
 
 const aiPropertyDefaults: Record<HubSpotAiPropertyField, string> = {
   leadScore: "ai_lead_score",
@@ -81,9 +111,11 @@ export function buildHubSpotContactSyncPayload(input: {
   generatedDm?: GeneratedDm;
   lifecycleStage?: string;
   aiPropertyMapping?: HubSpotAiPropertyMapping;
+  analyzedAt?: string;
 }): HubSpotContactSyncPayload {
   const standardProperties = mapStandardProfileProperties(input.profile, input.lifecycleStage);
   const customProperties: HubSpotContactProperties = {};
+  const lhaProperties: HubSpotContactProperties = {};
   const skippedProperties: SkippedHubSpotProperty[] = [];
   const aiPropertyMapping = input.aiPropertyMapping ?? {};
 
@@ -112,6 +144,9 @@ export function buildHubSpotContactSyncPayload(input: {
 
       customProperties[property] = value;
     }
+
+    Object.assign(lhaProperties, buildLhaPropertyValues(input.analysis, input.analyzedAt ?? new Date().toISOString()));
+    Object.assign(customProperties, lhaProperties);
   }
 
   return {
@@ -119,8 +154,11 @@ export function buildHubSpotContactSyncPayload(input: {
       ...standardProperties,
       ...customProperties
     },
+    standardProperties,
+    customProperties,
     standardPropertyKeys: Object.keys(standardProperties),
     customPropertyKeys: Object.keys(customProperties),
+    lhaPropertyKeys: Object.keys(lhaProperties),
     skippedProperties
   };
 }
@@ -174,61 +212,79 @@ export function buildHubSpotAnalysisNoteBody(input: {
   const profileUrl = getProfileUrl(input.profile);
   const evidence = input.analysis.scoreEvidence ?? [];
   const scoringMetadata = input.analysis.scoringMetadata;
-  const rows = [
-    `<strong>LinkedIn to HubSpot AI Assistant Summary</strong>`,
-    noteRow("Name", input.profile.fullName),
-    noteRow("LinkedIn", profileUrl),
-    noteRow("Headline", input.profile.headline ?? input.profile.jobTitle),
-    noteRow("Company", input.profile.companyName),
-    noteRow("Location", input.profile.location),
-    noteRow("Current role", input.profile.currentRoleTitle),
-    noteRow("Current role context", input.profile.currentRoleDescription),
-    noteRow("About", input.profile.about),
-    noteRow("Active ICP summary", icpSummary(input.userSettings)),
-    noteRow("Offer/product", input.userSettings?.sellerContext.productOrServiceName),
-    noteRow("Offer target outcome", input.userSettings?.sellerContext.targetOutcome),
-    noteRow("Preferred CTA", input.userSettings?.sellerContext.preferredCta),
-    noteRow("Lead score", `${input.analysis.leadScore} (${input.analysis.fitLabel ?? leadFitLabel(input.analysis.leadScore)})`),
-    noteRow("ICP fit label", input.analysis.fitLabel ?? leadFitLabel(input.analysis.leadScore)),
-    noteRow("Confidence", input.analysis.confidence),
-    noteRow("Analysis depth", scoringMetadata?.analysisDepth),
-    noteRow(
-      "Evidence counts",
-      scoringMetadata
-        ? `Facts: ${scoringMetadata.factsUsedCount}; Inferences: ${scoringMetadata.inferencesUsedCount}; Missing: ${scoringMetadata.missingCriteriaCount}; Disqualifiers: ${scoringMetadata.disqualifierCount}`
-        : undefined
-    ),
-    noteRow("Persona", input.analysis.persona),
-    noteListRow("Positive signals", input.analysis.positiveSignals ?? []),
-    noteListRow("Negative signals", input.analysis.negativeSignals ?? []),
-    noteListRow("Missing information", input.analysis.missingInformation ?? []),
-    noteListRow("Risk warnings", input.analysis.riskWarnings ?? []),
-    scoreEvidenceRow("Confirmed positive evidence", evidence.filter((item) => item.signalType === "positive" && item.basis === "fact")),
-    scoreEvidenceRow("Confirmed negative evidence", evidence.filter((item) => item.signalType === "negative" && item.basis === "fact")),
-    scoreEvidenceRow("Missing evidence", evidence.filter((item) => item.signalType === "missing")),
-    scoreEvidenceRow("Disqualifiers", evidence.filter((item) => item.signalType === "disqualifier")),
-    scoreEvidenceRow("AI inferences", evidence.filter((item) => item.basis === "inference")),
-    noteListRow("Pain points", input.analysis.painPoints),
-    noteRow("Icebreaker", input.analysis.icebreaker),
-    noteRow("Recommended outreach angle", input.analysis.recommendedOutreachAngle),
-    noteRow("Why this angle", input.analysis.whyThisAngle),
-    noteListRow("What to avoid", input.analysis.whatToAvoid ?? []),
-    noteRow("Suggested DM", input.generatedDm?.message),
-    dmVariantsRow(input.analysis.dmVariants ?? []),
-    noteRow("Next action", input.analysis.recommendedAction),
-    noteRow("Recommended next action", input.analysis.recommendedNextAction),
-    noteRow(
-      "Personalization score",
-      typeof input.generatedDm?.personalizationScore === "number" ? String(input.generatedDm.personalizationScore) : undefined
-    ),
-    noteRow("Spam risk", input.generatedDm?.spamRisk),
-    noteListRow("DM warnings", input.generatedDm?.warnings ?? []),
-    noteRow("Context confidence", input.profile.contextConfidence),
-    noteRow("Tool", "LinkedIn to HubSpot AI Assistant v0.3.0"),
-    noteRow("Saved at", new Date().toISOString())
-  ].filter((row): row is string => Boolean(row));
+  const outreachStrategy = safeOutreachStrategy(input.analysis);
+  const analyzedAt = new Date().toISOString();
+  const fitLabel = input.analysis.fitLabel ?? leadFitLabel(input.analysis.leadScore);
+  const recommendedAction = normalizeRecommendedAction(input.analysis.recommendedAction, input.analysis.leadScore);
+  const actionReason = cleanProperty(input.analysis.whyThisAngle) ?? outreachStrategy.whyRelevant;
 
-  return rows.join("<br>");
+  return [
+    `<strong>LinkedIn to HubSpot AI Assistant Summary</strong>`,
+    noteSection("Profile", [
+      noteRow("Name", input.profile.fullName),
+      noteRow("LinkedIn", profileUrl),
+      noteRow("Headline", input.profile.headline ?? input.profile.jobTitle),
+      noteRow("Company", input.profile.companyName),
+      noteRow("Current role", input.profile.currentRoleTitle ?? input.profile.jobTitle),
+      noteRow("Location", input.profile.location)
+    ]),
+    noteSection("Seller Context", [
+      noteRow("Active ICP summary", icpSummary(input.userSettings)),
+      noteRow("Offer/product", input.userSettings?.sellerContext.productOrServiceName),
+      noteRow("Offer target outcome", input.userSettings?.sellerContext.targetOutcome),
+      noteRow("Preferred CTA", input.userSettings?.sellerContext.preferredCta)
+    ]),
+    noteSection("Lead Decision", [
+      noteRow("ICP Fit Score", String(input.analysis.leadScore)),
+      noteRow("ICP Fit Label", fitLabel),
+      noteRow("Recommended Action", recommendedAction),
+      noteRow("Action reason", actionReason),
+      noteRow("Confidence", input.analysis.confidence),
+      noteRow("Analysis depth", scoringMetadata?.analysisDepth),
+      noteRow("Persona", input.analysis.persona)
+    ]),
+    noteSection("Score Evidence", [
+      noteListRow("Positive signals", input.analysis.positiveSignals ?? []),
+      noteListRow("Pain points", input.analysis.painPoints ?? []),
+      noteListRow("Missing information", input.analysis.missingInformation ?? []),
+      scoreEvidenceRow(
+        "Confirmed positive evidence",
+        evidence.filter((item) => item.signalType === "positive" && item.basis === "fact")
+      ),
+      scoreEvidenceRow("AI inferences", evidence.filter((item) => item.basis === "inference")),
+      noteListRow("Risks / disqualifiers", [
+        ...(input.analysis.riskWarnings ?? []),
+        ...(input.analysis.negativeSignals ?? []),
+        ...evidence.filter((item) => item.signalType === "disqualifier").map((item) => item.summary)
+      ])
+    ]),
+    noteSection("Outreach Strategy", [
+      noteRow("Why relevant", outreachStrategy.whyRelevant),
+      noteRow("Best angle", outreachStrategy.bestAngle),
+      noteRow("Pain hypothesis", outreachStrategy.painHypothesis),
+      noteRow("What to avoid", outreachStrategy.whatToAvoid),
+      noteRow("Suggested CTA", outreachStrategy.suggestedCTA)
+    ]),
+    noteSection("DM Drafts", [
+      noteRow("Suggested DM", input.generatedDm?.message),
+      dmVariantsRow(input.analysis.dmVariants ?? []),
+      noteRow(
+        "Personalization score",
+        typeof input.generatedDm?.personalizationScore === "number" ? String(input.generatedDm.personalizationScore) : undefined
+      ),
+      noteRow("Spam risk", input.generatedDm?.spamRisk),
+      noteListRow("DM warnings", input.generatedDm?.warnings ?? [])
+    ]),
+    noteSection("Next Step", [
+      noteRow("Recommended next action", input.analysis.recommendedNextAction ?? recommendedAction)
+    ]),
+    noteSection("Metadata", [
+      noteRow("Tool", "LinkedIn to HubSpot AI Assistant v0.4.0"),
+      noteRow("Saved at", analyzedAt)
+    ])
+  ]
+    .filter((section): section is string => Boolean(section))
+    .join("<br><br>");
 }
 
 export function removeHubSpotProperties(
@@ -293,6 +349,73 @@ function buildAiPropertyValues(analysis: ProfileAnalysis, generatedDm?: Generate
   };
 }
 
+export function buildLhaPropertyValues(analysis: ProfileAnalysis, analyzedAt: string): HubSpotContactProperties {
+  const outreachStrategy = safeOutreachStrategy(analysis);
+  const mainRisk = analysis.riskWarnings?.[0] || outreachStrategy.whatToAvoid;
+
+  return cleanPropertyRecord({
+    lha_icp_fit_score: String(analysis.leadScore),
+    lha_icp_fit_label: analysis.fitLabel ?? leadFitLabel(analysis.leadScore),
+    lha_recommended_action: normalizeRecommendedAction(analysis.recommendedAction, analysis.leadScore),
+    lha_confidence: String(confidenceAsNumber(analysis.confidence)),
+    lha_outreach_angle: outreachStrategy.bestAngle,
+    lha_main_reason: outreachStrategy.whyRelevant,
+    lha_main_risk: mainRisk,
+    lha_missing_info: analysis.missingInformation?.join("; "),
+    lha_last_analyzed_at: analyzedAt,
+    lha_source: "LinkedIn"
+  });
+}
+
+function safeOutreachStrategy(analysis: ProfileAnalysis): ProfileAnalysis["outreachStrategy"] {
+  const strategy = analysis.outreachStrategy as Partial<ProfileAnalysis["outreachStrategy"]> | undefined;
+  const fallback = "Not enough evidence";
+
+  return {
+    whyRelevant: cleanProperty(strategy?.whyRelevant) ?? cleanProperty(analysis.whyThisAngle) ?? fallback,
+    bestAngle: cleanProperty(strategy?.bestAngle) ?? cleanProperty(analysis.recommendedOutreachAngle) ?? fallback,
+    painHypothesis: cleanProperty(strategy?.painHypothesis) ?? cleanProperty(analysis.painPoints?.[0]) ?? fallback,
+    whatToAvoid: cleanProperty(strategy?.whatToAvoid) ?? cleanProperty(analysis.whatToAvoid?.join("; ")) ?? fallback,
+    suggestedCTA: cleanProperty(strategy?.suggestedCTA) ?? fallback
+  };
+}
+
+function cleanPropertyRecord(values: Record<string, string | undefined>): HubSpotContactProperties {
+  return Object.fromEntries(
+    Object.entries(values)
+      .map(([property, value]) => [property, cleanProperty(value)] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
+  );
+}
+
+function confidenceAsNumber(confidence: ProfileAnalysis["confidence"]): number {
+  if (confidence === "high") {
+    return 100;
+  }
+
+  if (confidence === "medium") {
+    return 60;
+  }
+
+  return 30;
+}
+
+function propertyDefinition(
+  name: string,
+  label: string,
+  type: HubSpotContactPropertyDefinition["type"],
+  fieldType: HubSpotContactPropertyDefinition["fieldType"]
+): HubSpotContactPropertyDefinition {
+  return {
+    name,
+    label,
+    type,
+    fieldType,
+    groupName: "contactinformation",
+    description: `${label} saved by LinkedIn to HubSpot AI Assistant.`
+  };
+}
+
 function cleanPropertyName(value: string | undefined): string | undefined {
   const cleaned = cleanProperty(value);
   if (!cleaned || ["none", "disabled", "false", "off"].includes(cleaned.toLowerCase())) {
@@ -315,13 +438,25 @@ function noteRow(label: string, value: string | undefined): string | null {
   return cleaned ? `<strong>${escapeHtml(label)}:</strong> ${escapeHtml(cleaned)}` : null;
 }
 
+function noteSection(title: string, rows: Array<string | null>): string | null {
+  const populatedRows = rows.filter((row): row is string => Boolean(row));
+  if (!populatedRows.length) {
+    return null;
+  }
+
+  return [`<strong>${escapeHtml(title)}</strong>`, ...populatedRows].join("<br>");
+}
+
 function noteListRow(label: string, values: string[] | undefined): string | null {
   const cleanedValues = values?.map(cleanProperty).filter((value): value is string => Boolean(value)) ?? [];
   if (!cleanedValues.length) {
     return null;
   }
 
-  return `<strong>${escapeHtml(label)}:</strong><br>${cleanedValues.map((value) => `- ${escapeHtml(value)}`).join("<br>")}`;
+  return `<strong>${escapeHtml(label)}:</strong><br>${cleanedValues
+    .slice(0, 6)
+    .map((value) => `- ${escapeHtml(truncateNoteText(value, 220))}`)
+    .join("<br>")}`;
 }
 
 function scoreEvidenceRow(label: string, evidence: ScoreEvidence[]): string | null {
@@ -331,10 +466,10 @@ function scoreEvidenceRow(label: string, evidence: ScoreEvidence[]): string | nu
 
   return [
     `<strong>${escapeHtml(label)}:</strong>`,
-    ...evidence.slice(0, 8).map((item) =>
+    ...evidence.slice(0, 5).map((item) =>
       [
-        `- ${escapeHtml(item.summary)}`,
-        item.evidenceText ? `Evidence: ${escapeHtml(item.evidenceText)}` : "",
+        `- ${escapeHtml(truncateNoteText(item.summary, 140))}`,
+        item.evidenceText ? `Evidence: ${escapeHtml(truncateNoteText(item.evidenceText, 220))}` : "",
         `Source: ${escapeHtml(item.sourceSection.replace("_", " "))}`,
         `Basis: ${escapeHtml(item.basis === "inference" ? "AI inference - not confirmed" : "Fact")}`
       ]
@@ -342,6 +477,24 @@ function scoreEvidenceRow(label: string, evidence: ScoreEvidence[]): string | nu
         .join("<br>")
     )
   ].join("<br>");
+}
+
+function truncateNoteText(value: string, maxLength: number): string {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+
+  const availableLength = Math.max(1, maxLength - 3);
+  const shortened = cleaned.slice(0, availableLength + 1);
+  const sentenceEnd = Math.max(shortened.lastIndexOf(". "), shortened.lastIndexOf("! "), shortened.lastIndexOf("? "));
+  if (sentenceEnd >= Math.floor(availableLength * 0.55)) {
+    return `${shortened.slice(0, sentenceEnd + 1).trim()}...`;
+  }
+
+  const wordEnd = shortened.lastIndexOf(" ", availableLength);
+  const end = wordEnd >= Math.floor(availableLength * 0.55) ? wordEnd : availableLength;
+  return `${shortened.slice(0, end).trimEnd()}...`;
 }
 
 function dmVariantsRow(
