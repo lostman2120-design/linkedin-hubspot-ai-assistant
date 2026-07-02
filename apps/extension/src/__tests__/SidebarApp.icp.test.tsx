@@ -131,4 +131,15 @@ describe("Sidebar ICP summary panel", () => {
 
     expect(sendMessage).toHaveBeenCalledWith({ type: "OPEN_OPTIONS_PAGE" }, expect.any(Function));
   });
+
+  it("renders safe lead-decision and outreach-strategy empty states in the required order", async () => {
+    await renderSidebar();
+
+    const text = container?.textContent ?? "";
+    expect(text).toContain("Recommended Action");
+    expect(text).toContain("Analyze this profile to see whether the lead is worth pursuing.");
+    expect(text).toContain("Outreach Strategy");
+    expect(text.indexOf("Recommended Action")).toBeLessThan(text.indexOf("ICP Fit Score"));
+    expect(text.indexOf("Outreach Strategy")).toBeLessThan(text.indexOf("DM Drafts"));
+  });
 });

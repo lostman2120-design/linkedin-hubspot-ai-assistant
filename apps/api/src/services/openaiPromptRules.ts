@@ -33,7 +33,7 @@ export function buildLeadScoringInstruction(hasTargetCustomerProfile: boolean): 
     "Do not default to 0 unless the profile is clearly irrelevant, contains almost no useful visible information, or parsing fully fails.",
     fitBasis,
     "Scoring guide: 80-100 = strong fit, 60-79 = good fit, 40-59 = possible fit, 15-39 = weak fit, 0-14 = poor fit.",
-    "Briefly reflect the score in recommendedAction without explaining hidden reasoning."
+    "Use the score and visible evidence when choosing the allowed recommendedAction value."
   ].join(" ");
 }
 
@@ -83,6 +83,7 @@ export function createEnglishOnlyProfileAnalysisSchema() {
         recommendedOutreachAngle: value.recommendedOutreachAngle,
         whyThisAngle: value.whyThisAngle,
         whatToAvoid: value.whatToAvoid,
+        outreachStrategy: value.outreachStrategy,
         scoreEvidence: (value.scoreEvidence ?? []).map((item) => ({
           summary: item.summary,
           sourceSection: item.sourceSection,

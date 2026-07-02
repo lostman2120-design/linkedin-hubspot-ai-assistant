@@ -99,7 +99,7 @@ describe("score evidence schema", () => {
     const parsed = ProfileAnalysisSchema.parse(baseAnalysis);
 
     expect(parsed.scoreEvidence).toEqual([]);
-    expect(parsed.scoringMetadata.scoringVersion).toBe("0.3.0");
+    expect(parsed.scoringMetadata.scoringVersion).toBe("0.4.0");
     expect(parsed.scoringMetadata.analysisDepth).toBe("limited");
   });
 });

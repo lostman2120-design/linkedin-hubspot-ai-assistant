@@ -3,6 +3,7 @@ import type { DmVariant, GeneratedDm, HubSpotSyncResult, LinkedInProfile, Messag
 import {
   DEFAULT_USER_SETTINGS,
   PROFILE_TEXT_LIMITS,
+  RECOMMENDED_ACTION_DESCRIPTIONS,
   UNABLE_TO_EXTRACT_FIELD,
   getProfileUrl,
   validateLinkedInProfileIdentity
@@ -145,6 +146,26 @@ function confidenceExplanation(analysis: ProfileAnalysis | null): string {
   return "Confidence is based on visible profile facts, saved ICP settings, and clearly labeled AI inferences.";
 }
 
+function recommendedActionClass(action: ProfileAnalysis["recommendedAction"]): string {
+  const classes: Record<ProfileAnalysis["recommendedAction"], string> = {
+    "Pursue now": "pursue",
+    "Research more": "research",
+    "Low priority": "low",
+    "Do not contact yet": "stop"
+  };
+
+  return classes[action];
+}
+
+function StrategyField({ label, value, fallback }: { label: string; value?: string; fallback: string }) {
+  return (
+    <div className="lhai-strategy-field">
+      <span className="lhai-label">{label}</span>
+      <p className={`lhai-value${value ? "" : " lhai-muted"}`}>{value || fallback}</p>
+    </div>
+  );
+}
+
 function evidenceGroup(items: ScoreEvidence[], signalType: ScoreEvidence["signalType"], basis?: ScoreEvidence["basis"]): ScoreEvidence[] {
   return items.filter((item) => item.signalType === signalType && (!basis || item.basis === basis));
 }
@@ -272,6 +293,7 @@ export function SidebarApp() {
   const riskWarnings = renderedAnalysis?.riskWarnings ?? [];
   const painPoints = renderedAnalysis?.painPoints ?? [];
   const whatToAvoid = renderedAnalysis?.whatToAvoid ?? [];
+  const outreachStrategy = renderedAnalysis?.outreachStrategy;
   const dmVariants = renderedAnalysis?.dmVariants ?? [];
   const scoreEvidence = renderedAnalysis?.scoreEvidence ?? [];
   const visibleScoreEvidence = showAllScoreEvidence ? scoreEvidence : scoreEvidence.slice(0, 6);
@@ -906,6 +928,20 @@ export function SidebarApp() {
           </div>
         </section>
 
+        <section className="lhai-section lhai-card lhai-decision-card" aria-label="Recommended action">
+          <span className="lhai-label">Recommended Action</span>
+          {renderedAnalysis ? (
+            <>
+              <span className={`lhai-decision-badge lhai-decision-${recommendedActionClass(renderedAnalysis.recommendedAction)}`}>
+                {renderedAnalysis.recommendedAction}
+              </span>
+              <p className="lhai-value lhai-muted">{RECOMMENDED_ACTION_DESCRIPTIONS[renderedAnalysis.recommendedAction]}</p>
+            </>
+          ) : (
+            <p className="lhai-value lhai-muted">Analyze this profile to see whether the lead is worth pursuing.</p>
+          )}
+        </section>
+
         <section className="lhai-section lhai-card">
           <div className="lhai-section-heading">
             <span className="lhai-label">Profile</span>
@@ -1107,18 +1143,14 @@ export function SidebarApp() {
 
         <section className="lhai-section lhai-card">
           <span className="lhai-label">Outreach Strategy</span>
-          <p className="lhai-value">{renderedAnalysis?.recommendedOutreachAngle || "Analyze this profile to get a recommended angle."}</p>
-          <p className="lhai-value lhai-muted">{renderedAnalysis?.whyThisAngle || "The AI will explain why this angle is safest."}</p>
-          {whatToAvoid.length ? (
-            <>
-              <span className="lhai-label">What To Avoid</span>
-              <ul className="lhai-list">
-                {whatToAvoid.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </>
-          ) : null}
+          <div className="lhai-strategy-list">
+            <StrategyField label="Why relevant" value={outreachStrategy?.whyRelevant} fallback="Analyze this profile to understand why the lead may matter." />
+            <StrategyField label="Best angle" value={outreachStrategy?.bestAngle} fallback="A recommended outreach angle will appear here." />
+            <StrategyField label="Pain hypothesis" value={outreachStrategy?.painHypothesis} fallback="A cautious pain hypothesis will appear here." />
+            <StrategyField label="What to avoid" value={outreachStrategy?.whatToAvoid} fallback="Risks and assumptions to avoid will appear here." />
+            <StrategyField label="Suggested CTA" value={outreachStrategy?.suggestedCTA} fallback="A low-pressure next step will appear here." />
+          </div>
+          {whatToAvoid.length ? <p className="lhai-value lhai-muted">Additional cautions: {whatToAvoid.join("; ")}</p> : null}
         </section>
 
         <section className="lhai-section lhai-card lhai-dm-section">

@@ -8,7 +8,9 @@ import type {
   LicenseVerifyResponseSchema,
   LinkedInVisibleProfileContextSchema,
   LinkedInProfileSchema,
+  OutreachStrategySchema,
   ProfileAnalysisSchema,
+  RecommendedActionSchema,
   ScoreEvidenceSchema,
   ScoringMetadataSchema,
   SellerContextSchema,
@@ -19,6 +21,8 @@ import type { MESSAGE_TYPES } from "./constants.js";
 export type LinkedInProfile = z.infer<typeof LinkedInProfileSchema>;
 export type LinkedInVisibleProfileContext = z.infer<typeof LinkedInVisibleProfileContextSchema>;
 export type ProfileAnalysis = z.infer<typeof ProfileAnalysisSchema>;
+export type RecommendedAction = z.infer<typeof RecommendedActionSchema>;
+export type OutreachStrategy = z.infer<typeof OutreachStrategySchema>;
 export type DmVariant = z.infer<typeof DmVariantSchema>;
 export type GeneratedDm = z.infer<typeof GeneratedDmSchema>;
 export type SellerContext = z.infer<typeof SellerContextSchema>;

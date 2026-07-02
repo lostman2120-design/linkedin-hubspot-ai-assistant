@@ -8,12 +8,13 @@ It adds a sidebar to LinkedIn profile pages. The sidebar can read visible profil
 
 - Analyzes the LinkedIn profile that is open now.
 - Uses only text that is visible on the page.
-- Creates a lead score, persona, pain points, icebreaker, and next action.
+- Creates an ICP fit score and a clear Recommended Action: Pursue now, Research more, Low priority, or Do not contact yet.
 - Shows why the lead score was given, with visible evidence and clear AI inference labels.
+- Shows an Outreach Strategy with relevance, angle, pain hypothesis, cautions, and a suggested CTA.
 - Uses your saved Seller Context, so messages match what you sell.
 - Drafts short LinkedIn messages for the user to review.
 - Creates or updates one HubSpot contact.
-- Saves an AI summary note to HubSpot.
+- Saves the sales decision, evidence, outreach strategy, and AI summary note to HubSpot.
 - Saves a follow-up task as a HubSpot note named "Follow-up Task".
 
 ## What This Tool Does Not Do
@@ -124,7 +125,7 @@ The Chrome extension never stores this key.
 
 ## How To Set The HubSpot Private App Token
 
-Create a HubSpot Private App with CRM contact and note permissions. Then put the token in `apps/api/.env`:
+Create a HubSpot Private App with CRM contact, contact schema, note, and task permissions. The LHA property setup needs contact property schema read/write access. Then put the token in `apps/api/.env`:
 
 ```env
 HUBSPOT_PRIVATE_APP_TOKEN=your_hubspot_private_app_token_here
@@ -149,7 +150,22 @@ Standard HubSpot contact properties:
 
 The app does not invent phone numbers, city, country, email address, or company domain. If that data is not visible or known, it stays blank.
 
-AI analysis is always saved to a structured HubSpot note when the contact is created or updated. The note includes the LinkedIn URL, headline, company, ICP fit score, fit label, confidence, analysis depth, evidence behind the score, AI inferences, outreach angle, suggested DM variants, and next action.
+AI analysis is always saved to a structured HubSpot note when the contact is created or updated. The note includes the LinkedIn URL, ICP fit, Recommended Action, confidence, reasons, missing information, risks, Outreach Strategy, DM variants, Seller Context summary, and analysis time.
+
+v0.4.0 also creates and updates these LHA contact properties when the HubSpot token has property schema permission:
+
+- `lha_icp_fit_score`
+- `lha_icp_fit_label`
+- `lha_recommended_action`
+- `lha_confidence`
+- `lha_outreach_angle`
+- `lha_main_reason`
+- `lha_main_risk`
+- `lha_missing_info`
+- `lha_last_analyzed_at`
+- `lha_source`
+
+Property creation is idempotent. The app uses only the `lha_` prefix and does not change existing user-created properties. If HubSpot blocks property creation or update, the contact and AI summary note are still saved and the extension shows a warning.
 
 Optional AI contact properties:
 
@@ -379,6 +395,8 @@ apps/extension/dist
 ## Seller Context
 
 Seller Context tells the assistant what you sell. It helps the score, outreach angle, and DM drafts feel specific instead of generic.
+
+New users can start with one of five templates in Options: B2B SaaS Founder, HubSpot Consultant, RevOps Agency, Sales Agency, or Freelance Consultant. Applying a template asks before replacing existing context and does not save until you click **Save Settings**.
 
 Open the Options page and fill in:
 

@@ -1,4 +1,5 @@
-import type { DmVariant, ProfileAnalysis, ScoreEvidence, ScoringMetadata } from "@linkedin-hubspot-ai/shared";
+import { normalizeRecommendedAction } from "@linkedin-hubspot-ai/shared";
+import type { DmVariant, OutreachStrategy, ProfileAnalysis, ScoreEvidence, ScoringMetadata } from "@linkedin-hubspot-ai/shared";
 
 const allowedVariantLabels = ["Soft opener", "Direct value pitch", "Feedback request"] as const;
 const fallbackVariantLabels: DmVariant["label"][] = ["Soft opener", "Direct value pitch", "Feedback request"];
@@ -32,15 +33,16 @@ const scoreEvidenceSources = [
 export function normalizeAnalysisResult(raw: unknown): ProfileAnalysis {
   const input = isRecord(raw) ? raw : {};
   const confidence = normalizeConfidence(input.confidence);
+  const leadScore = normalizeLeadScore(input.leadScore);
 
   return {
-    leadScore: normalizeLeadScore(input.leadScore),
+    leadScore,
     fitLabel: normalizeString(input.fitLabel, "Not enough data", 80),
     confidence,
     persona: normalizeString(input.persona, "", 500),
     painPoints: normalizeStringArray(input.painPoints, 6, 220),
     icebreaker: normalizeString(input.icebreaker, "", 500),
-    recommendedAction: normalizeString(input.recommendedAction, "Review the profile and decide whether to reach out.", 500),
+    recommendedAction: normalizeRecommendedAction(input.recommendedAction, leadScore),
     recommendedNextAction: normalizeString(input.recommendedNextAction, "", 500),
     positiveSignals: normalizeStringArray(input.positiveSignals, 8, 220),
     negativeSignals: normalizeStringArray(input.negativeSignals, 8, 220),
@@ -49,6 +51,7 @@ export function normalizeAnalysisResult(raw: unknown): ProfileAnalysis {
     recommendedOutreachAngle: normalizeString(input.recommendedOutreachAngle, "", 160),
     whyThisAngle: normalizeString(input.whyThisAngle, "", 600),
     whatToAvoid: normalizeStringArray(input.whatToAvoid, 8, 220),
+    outreachStrategy: normalizeOutreachStrategy(input.outreachStrategy, input),
     scoreEvidence: normalizeScoreEvidence(input.scoreEvidence),
     scoringMetadata: normalizeScoringMetadata(input.scoringMetadata, input.leadScore, input.fitLabel, confidence),
     dmVariants: normalizeDmVariants(input.dmVariants)
@@ -141,7 +144,7 @@ function normalizeScoringMetadata(
   const finalScore = normalizeLeadScore(input.finalScore ?? leadScore);
 
   return {
-    scoringVersion: normalizeString(input.scoringVersion, "0.3.0", 40),
+    scoringVersion: normalizeString(input.scoringVersion, "0.4.0", 40),
     finalScore,
     fitLabel: normalizeString(fitLabel ?? input.fitLabel, "Not enough data", 80) as ScoringMetadata["fitLabel"],
     confidence: normalizeConfidence(input.confidence ?? confidence),
@@ -227,13 +230,40 @@ function normalizeEnum<const T extends readonly string[]>(value: unknown, allowe
 
 function normalizeVariantLabel(value: unknown, index: number): DmVariant["label"] {
   if (typeof value === "string") {
-    const exactLabel = allowedVariantLabels.find((label) => label.toLowerCase() === value.trim().toLowerCase());
+    const normalizedValue = value.trim().replace(/\s+/g, " ").toLowerCase();
+    if (normalizedValue === "direct pitch") {
+      return "Direct value pitch";
+    }
+
+    const exactLabel = allowedVariantLabels.find((label) => label.toLowerCase() === normalizedValue);
     if (exactLabel) {
       return exactLabel;
     }
   }
 
   return fallbackVariantLabels[index] ?? "Soft opener";
+}
+
+function normalizeOutreachStrategy(value: unknown, analysis: Record<string, unknown>): OutreachStrategy {
+  const input = isRecord(value) ? value : {};
+  const painPoints = normalizeStringArray(analysis.painPoints, 6, 220);
+  const avoidItems = normalizeStringArray(analysis.whatToAvoid, 8, 220);
+
+  return {
+    whyRelevant: normalizeString(
+      input.whyRelevant,
+      normalizeString(analysis.whyThisAngle, "More visible evidence is needed to confirm relevance.", 700),
+      700
+    ),
+    bestAngle: normalizeString(input.bestAngle, normalizeString(analysis.recommendedOutreachAngle, "Research first", 300), 300),
+    painHypothesis: normalizeString(input.painHypothesis, painPoints[0] || "The prospect's current pain is not confirmed.", 700),
+    whatToAvoid: normalizeString(
+      input.whatToAvoid,
+      avoidItems.join("; ") || "Avoid assumptions that are not supported by visible profile evidence.",
+      700
+    ),
+    suggestedCTA: normalizeString(input.suggestedCTA, "Ask one short, low-pressure question.", 400)
+  };
 }
 
 function normalizeString(value: unknown, fallback: string, maxChars: number): string {

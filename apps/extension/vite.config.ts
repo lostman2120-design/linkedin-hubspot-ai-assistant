@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
     define: {
       __STRIPE_PAYMENT_LINK__: JSON.stringify(env.VITE_STRIPE_PAYMENT_LINK || defaultStripePaymentLink),
       __API_BASE_URL__: JSON.stringify(env.VITE_API_BASE_URL || defaultApiBaseUrl),
-      __EXTENSION_VERSION__: JSON.stringify(packageJson.version || "0.3.0"),
+      __EXTENSION_VERSION__: JSON.stringify(packageJson.version || "0.4.0"),
       __PROFILE_EXTRACTION_DEBUG__: JSON.stringify(env.VITE_PROFILE_EXTRACTION_DEBUG === "true")
     },
     build: {

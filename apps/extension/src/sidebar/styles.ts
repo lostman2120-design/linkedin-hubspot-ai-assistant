@@ -155,6 +155,63 @@ export const sidebarStyles = `
     background: #ffffff;
   }
 
+  .lhai-decision-card {
+    border-color: #a7f3d0;
+    background: #f0fdf4;
+  }
+
+  .lhai-decision-badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    margin: 2px 0 7px;
+    border: 1px solid;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 13px;
+    line-height: 1.2;
+    font-weight: 850;
+  }
+
+  .lhai-decision-pursue {
+    background: #dcfce7;
+    border-color: #86efac;
+    color: #166534;
+  }
+
+  .lhai-decision-research {
+    background: #eff6ff;
+    border-color: #bfdbfe;
+    color: #1d4ed8;
+  }
+
+  .lhai-decision-low {
+    background: #fffbeb;
+    border-color: #fde68a;
+    color: #92400e;
+  }
+
+  .lhai-decision-stop {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #991b1b;
+  }
+
+  .lhai-strategy-list {
+    display: grid;
+    gap: 9px;
+  }
+
+  .lhai-strategy-field {
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 8px;
+  }
+
+  .lhai-strategy-field:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
   .lhai-usage-panel {
     display: grid;
     gap: 6px;

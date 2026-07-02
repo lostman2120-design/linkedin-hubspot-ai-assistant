@@ -70,7 +70,8 @@ describe("normalizeAnalysisResult", () => {
     expect(normalized.fitLabel).toBe("Not enough data");
     expect(normalized.positiveSignals).toEqual([]);
     expect(normalized.dmVariants).toEqual([]);
-    expect(normalized.recommendedAction).toBe("Review manually");
+    expect(normalized.recommendedAction).toBe("Research more");
+    expect(normalized.outreachStrategy.bestAngle).toBe("Research first");
   });
 
   it("filters malformed DM variants and normalizes valid ones", () => {

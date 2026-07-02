@@ -215,7 +215,7 @@ function buildScoringMetadata(
   const analysisDepth = factsUsedCount + inferencesUsedCount >= 5 ? "deep" : factsUsedCount + inferencesUsedCount >= 2 ? "standard" : "limited";
 
   return {
-    scoringVersion: "0.3.0",
+    scoringVersion: "0.4.0",
     finalScore,
     fitLabel,
     confidence,
@@ -470,6 +470,7 @@ export function normalizeProfileAnalysisScore(
       missingInformation: (analysis.missingInformation ?? []).length
         ? analysis.missingInformation
         : ["More visible profile context is needed for confident scoring."],
+      recommendedAction: "Research more",
       recommendedNextAction: analysis.recommendedNextAction || analysis.recommendedAction,
       recommendedOutreachAngle: analysis.recommendedOutreachAngle || "Research first"
     };

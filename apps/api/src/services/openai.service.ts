@@ -1,4 +1,4 @@
-import { DEFAULT_SELLER_CONTEXT } from "@linkedin-hubspot-ai/shared";
+import { DEFAULT_SELLER_CONTEXT, normalizeRecommendedAction } from "@linkedin-hubspot-ai/shared";
 import type { GeneratedDm, LinkedInProfile, MessageType, ProfileAnalysis, UserSettings } from "@linkedin-hubspot-ai/shared";
 import { z } from "zod";
 import { AppError } from "../utils/errors.js";
@@ -205,13 +205,15 @@ function buildOpenAiErrorDetails(raw: ChatCompletionResponse, detail: string): s
 const dmVariantListFields = ["personalizationUsed", "offerContextUsed", "factsUsed", "inferencesUsed", "warnings"] as const;
 
 export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
-  if (!isRecord(value) || !Array.isArray(value.dmVariants)) {
+  if (!isRecord(value)) {
     return value;
   }
 
+  const leadScore = typeof value.leadScore === "number" && Number.isFinite(value.leadScore) ? value.leadScore : 0;
   return {
     ...value,
-    dmVariants: value.dmVariants.map((variant) => {
+    recommendedAction: normalizeRecommendedAction(value.recommendedAction, leadScore),
+    dmVariants: Array.isArray(value.dmVariants) ? value.dmVariants.map((variant) => {
       if (!isRecord(variant)) {
         return variant;
       }
@@ -223,7 +225,7 @@ export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
       }
 
       return normalizedVariant;
-    })
+    }) : value.dmVariants
   };
 }
 
@@ -346,9 +348,10 @@ export class OpenAiService {
         "Use the Seller Context to understand what the user sells, the target outcome, differentiators, proof points, CTA, allowed claims, claims to avoid, brand voice, and compatibility context.",
         "Do not invent proof, customer results, HubSpot usage, budget, buying intent, company size, or technology stack.",
         "Facts must be based on visible profile text or saved user settings. Inferences must be labeled as inferences.",
-        "Recommend Research first or Skip when fit is weak or context is limited.",
+        "Use Research more or Low priority when visible evidence is limited, risk is high, or fit is unclear.",
         "Do not claim the person uses HubSpot unless it is explicitly visible.",
         "Generate three concise LinkedIn DM variants: Soft opener, Direct value pitch, and Feedback request.",
+        "Make every DM variant consistent with the returned outreachStrategy.",
         buildEnglishOnlyInstruction(),
         "Always return valid JSON."
       ].join(" ");
@@ -362,14 +365,15 @@ Return one JSON object with these exact fields:
 - negativeSignals: an array of short English strings
 - missingInformation: an array of short English strings
 - riskWarnings: an array of short English strings
+- recommendedAction: exactly one of "Pursue now", "Research more", "Low priority", or "Do not contact yet"
 - recommendedNextAction: a short English sentence
 - recommendedOutreachAngle: a short English label such as Feedback request, Soft opener, Direct pitch, Research first, or Skip / not a good fit
 - whyThisAngle: a short English explanation
 - whatToAvoid: an array of short English strings
+- outreachStrategy: an object with whyRelevant, bestAngle, painHypothesis, whatToAvoid, and suggestedCTA; every field must be a concise English string
 - persona: a short English description
 - painPoints: an array of short English strings
 - icebreaker: a short English sentence
-- recommendedAction: a short English sentence
 - confidence: "high", "medium", or "low"
 - scoreEvidence: an array of evidence objects with id, signalType, basis, category, summary, evidenceText, sourceSection, confidence, scoreImpact
 - scoringMetadata: scoringVersion, finalScore, fitLabel, confidence, factsUsedCount, inferencesUsedCount, missingCriteriaCount, disqualifierCount, analysisDepth
@@ -399,8 +403,11 @@ Compact valid DM variant example:
 
 Do not use placeholder values. Calculate leadScore from the visible profile and ICP settings.
 Do not overclaim. Separate visible facts from cautious inferences in the signal arrays.
+Do not invent facts that are not visible in the LinkedIn profile or saved Seller Context.
+If evidence is insufficient, set recommendedAction to "Research more" or "Low priority".
 Each DM variant must be concise, natural English, and LinkedIn-appropriate.
 Each DM variant must explain which offer context, visible facts, and cautious inferences it used.
+Each DM variant must follow outreachStrategy.bestAngle, outreachStrategy.whatToAvoid, and outreachStrategy.suggestedCTA.
 Respect claimsToAvoid and compatibilityContext from Seller Context.
 
 User settings:
@@ -509,12 +516,13 @@ function fallbackDmVariants(analysis: ProfileAnalysis, profile: LinkedInProfile,
   const firstName = profile.firstName || profile.fullName.split(/\s+/)[0] || "there";
   const context = profile.headline || profile.currentRoleTitle || profile.companyName || "your work";
   const offer = userSettings.productOrServiceDescription || "a lightweight LinkedIn to HubSpot workflow";
+  const strategy = analysis.outreachStrategy;
 
   return [
     {
       label: "Soft opener",
       useCase: "Use when this is a first touch and the visible buying signal is not strong yet.",
-      text: `Hi ${firstName}, noticed ${context}. I am exploring a lighter way for HubSpot users to turn LinkedIn research into cleaner CRM context. Thought it could be relevant to your work.`,
+      text: `Hi ${firstName}, noticed ${context}. ${strategy.whyRelevant} I thought it could be useful to compare notes on ${strategy.bestAngle.toLowerCase()}.`,
       personalizationUsed: [context],
       offerContextUsed: [sellerContext.productOrServiceName],
       factsUsed: [context],
@@ -525,7 +533,7 @@ function fallbackDmVariants(analysis: ProfileAnalysis, profile: LinkedInProfile,
     {
       label: "Direct value pitch",
       useCase: "Use when the profile clearly matches the ICP and a direct value angle feels appropriate.",
-      text: `Hi ${firstName}, your profile stood out because of ${context}. I am building ${offer}. It helps teams score LinkedIn leads, draft outreach, and save the context to HubSpot without extra copy-paste.`,
+      text: `Hi ${firstName}, your profile stood out because of ${context}. I am building ${offer} around ${strategy.bestAngle.toLowerCase()}. ${strategy.suggestedCTA}`,
       personalizationUsed: [context],
       offerContextUsed: [sellerContext.targetOutcome],
       factsUsed: [context],
@@ -536,7 +544,7 @@ function fallbackDmVariants(analysis: ProfileAnalysis, profile: LinkedInProfile,
     {
       label: "Feedback request",
       useCase: "Use for early feedback, Product Hunt outreach, or when a softer ask is safer than a pitch.",
-      text: `Hi ${firstName}, I am getting feedback from people close to LinkedIn prospecting and HubSpot workflows. Your ${context} caught my eye. Would a quick look at this workflow be useful to sanity-check?`,
+      text: `Hi ${firstName}, I am getting feedback from people close to LinkedIn prospecting and HubSpot workflows. Your ${context} caught my eye. ${strategy.suggestedCTA}`,
       personalizationUsed: [context],
       offerContextUsed: [sellerContext.preferredCta],
       factsUsed: [context],

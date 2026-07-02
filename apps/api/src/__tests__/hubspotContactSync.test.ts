@@ -4,6 +4,7 @@ import {
   HubSpotService,
   isHubSpotInvalidPropertyError
 } from "../services/hubspot.service.js";
+import { LHA_CONTACT_PROPERTY_DEFINITIONS } from "../utils/hubspotMapping.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -86,5 +87,37 @@ describe("HubSpot contact property sync", () => {
       expect(isHubSpotInvalidPropertyError(error)).toBe(true);
       expect(getHubSpotInvalidPropertyNames(error)).toEqual(["ai_persona"]);
     }
+  });
+
+  it("creates a missing LHA contact property idempotently", async () => {
+    process.env.HUBSPOT_PRIVATE_APP_TOKEN = "test-token";
+    const definition = LHA_CONTACT_PROPERTY_DEFINITIONS[0]!;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: "Property not found" }), {
+          status: 404,
+          statusText: "Not Found",
+          headers: { "Content-Type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: definition.name }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" }
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new HubSpotService().ensureContactProperties([definition]);
+
+    expect(result).toEqual({ ready: [definition.name], failed: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toMatchObject({
+      name: "lha_icp_fit_score",
+      label: "LHA ICP Fit Score",
+      type: "number",
+      fieldType: "number"
+    });
   });
 });

@@ -9,6 +9,12 @@ import {
 } from "../licenseActivation";
 import { LICENSE_STATE_KEY, getStoredLicenseState, getStoredSettings, saveStoredSettings } from "../storage";
 import { isBetaProLicenseActive, planLabel } from "../plan";
+import {
+  SELLER_CONTEXT_TEMPLATES,
+  getSellerContextTemplate,
+  sellerContextHasValues,
+  type SellerContextTemplateId
+} from "../sellerContextTemplates";
 import "../pages.css";
 
 type SellerContextField = {
@@ -40,7 +46,8 @@ export function Options() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatusMessage | null>(null);
   const [isLicenseBusy, setIsLicenseBusy] = useState(false);
   const [isBetaProActive, setIsBetaProActive] = useState(false);
-  const [licensePlanLabel, setLicensePlanLabel] = useState<"Free plan" | "Beta Pro">("Free plan");
+  const [licensePlanLabel, setLicensePlanLabel] = useState<"Free plan" | "Beta Pro" | "Pro">("Free plan");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<SellerContextTemplateId | "">("");
 
   useEffect(() => {
     void getStoredSettings().then(setSettings).catch(() => {
@@ -146,12 +153,68 @@ export function Options() {
     });
   }
 
+  function handleApplyTemplate() {
+    if (!selectedTemplateId) {
+      return;
+    }
+
+    const template = getSellerContextTemplate(selectedTemplateId);
+    if (
+      sellerContextHasValues(settings.sellerContext) &&
+      !window.confirm(`Replace your current Seller Context with the ${template.name} template?`)
+    ) {
+      return;
+    }
+
+    setSettings({
+      ...settings,
+      productOrServiceDescription: template.context.productOrServiceDescription,
+      sellerContext: { ...template.context }
+    });
+    setError(null);
+    setMessage(`${template.name} template applied. Review the fields, then save your settings.`);
+  }
+
   return (
     <main className="page">
       <h1 className="title">Settings</h1>
-      <p className="subtitle">These settings help the AI write useful, respectful outreach messages.</p>
+      <p className="subtitle">Analyze a LinkedIn profile, review ICP fit and recommended action, then save the sales context to HubSpot.</p>
+      <section className="panel intro-panel">
+        <h2 className="panel-title">Stop saving empty LinkedIn leads. Save why they matter.</h2>
+        <p className="subtitle">Start with a template, then adjust your ICP and Seller Context so the assistant can make a useful sales decision.</p>
+      </section>
 
       <form className="form" onSubmit={(event) => void handleSubmit(event)}>
+        <section className="panel template-panel">
+          <h2 className="panel-title">Start with a template</h2>
+          <p className="subtitle">Choose the closest sales motion. Applying a template fills Seller Context but does not save until you click Save Settings.</p>
+          <div className="field">
+            <label htmlFor="sellerContextTemplate">Seller Context template</label>
+            <select
+              id="sellerContextTemplate"
+              value={selectedTemplateId}
+              onChange={(event) => setSelectedTemplateId(event.target.value as SellerContextTemplateId | "")}
+            >
+              <option value="" disabled>
+                Select a starter template...
+              </option>
+              {SELLER_CONTEXT_TEMPLATES.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <span className="field-help">
+              {selectedTemplateId
+                ? getSellerContextTemplate(selectedTemplateId).description
+                : "Templates are optional and only fill the form after you choose and apply one."}
+            </span>
+          </div>
+          <button className="button secondary" type="button" disabled={!selectedTemplateId} onClick={handleApplyTemplate}>
+            Apply template
+          </button>
+        </section>
+
         <div className="field">
           <label htmlFor="backendApiUrl">Backend API URL</label>
           <input

@@ -4,6 +4,15 @@ export const DM_TONES = ["professional", "friendly", "concise", "casual"] as con
 
 export const MESSAGE_TYPES = ["connection", "first_dm", "follow_up", "soft_pitch"] as const;
 
+export const RECOMMENDED_ACTIONS = ["Pursue now", "Research more", "Low priority", "Do not contact yet"] as const;
+
+export const RECOMMENDED_ACTION_DESCRIPTIONS: Record<(typeof RECOMMENDED_ACTIONS)[number], string> = {
+  "Pursue now": "Strong fit based on visible profile evidence.",
+  "Research more": "Potential fit, but more information is needed.",
+  "Low priority": "Weak or unclear fit for the current seller context.",
+  "Do not contact yet": "Not enough fit or too much risk to contact now."
+};
+
 export const SELLER_CONTEXT_FIELD_LIMITS = {
   productOrServiceName: 120,
   productOrServiceDescription: 1000,

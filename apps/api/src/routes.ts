@@ -11,12 +11,9 @@ import {
   compactLinkedInProfile,
   validateLinkedInProfileIdentity
 } from "@linkedin-hubspot-ai/shared";
-import {
-  getHubSpotInvalidPropertyNames,
-  HubSpotService,
-  isHubSpotInvalidPropertyError
-} from "./services/hubspot.service.js";
+import { HubSpotService } from "./services/hubspot.service.js";
 import { sendLicenseEmailWebhook } from "./services/license-email.service.js";
+import { saveOptionalHubSpotCustomProperties } from "./services/hubspot-custom-properties.service.js";
 import { createLicenseRepository, type LicenseRecord } from "./services/license.repository.js";
 import { verifyBetaProLicenseKey } from "./services/license.service.js";
 import { OpenAiService } from "./services/openai.service.js";
@@ -34,8 +31,7 @@ import {
 import {
   buildHubSpotAnalysisNoteBody,
   buildHubSpotContactSyncPayload,
-  getConfiguredHubSpotAiPropertyMapping,
-  removeHubSpotProperties
+  getConfiguredHubSpotAiPropertyMapping
 } from "./utils/hubspotMapping.js";
 
 const router = Router();
@@ -178,42 +174,26 @@ router.post(
     }
 
     const existingContactId = await hubSpotService.searchContactByLinkedInUrl(profile.profileUrl);
-    let contactId: string;
-    let retriedWithoutCustomProperties = false;
+    const contactId = existingContactId
+      ? await hubSpotService.updateContactWithProperties(existingContactId, syncPayload.standardProperties)
+      : await hubSpotService.createContactWithProperties(syncPayload.standardProperties);
 
-    try {
-      contactId = existingContactId
-        ? await hubSpotService.updateContactWithProperties(existingContactId, syncPayload.properties)
-        : await hubSpotService.createContactWithProperties(syncPayload.properties);
-    } catch (error) {
-      if (!syncPayload.customPropertyKeys.length || !isHubSpotInvalidPropertyError(error)) {
-        throw error;
-      }
-
-      retriedWithoutCustomProperties = true;
-      console.warn("[hubspot-contact] Optional custom properties rejected by HubSpot. Retrying with standard properties only.", {
-        invalidProperties: getHubSpotInvalidPropertyNames(error),
-        removedCustomProperties: syncPayload.customPropertyKeys
-      });
-      const standardOnlyProperties = removeHubSpotProperties(syncPayload.properties, syncPayload.customPropertyKeys);
-      contactId = existingContactId
-        ? await hubSpotService.updateContactWithProperties(existingContactId, standardOnlyProperties)
-        : await hubSpotService.createContactWithProperties(standardOnlyProperties);
-    }
+    const customPropertySync = await saveOptionalHubSpotCustomProperties(
+      hubSpotService,
+      contactId,
+      syncPayload.customProperties
+    );
+    const customPropertyWarnings = customPropertySync.warnings;
 
     const noteBody = buildHubSpotAnalysisNoteBody({ profile, analysis, generatedDm, userSettings });
     const noteId = await hubSpotService.createNoteForContact(contactId, noteBody);
     const created = !existingContactId;
-    const partialPropertySync =
-      retriedWithoutCustomProperties ||
-      syncPayload.skippedProperties.some((property) => property.reason === "custom property not configured");
+    const partialPropertySync = customPropertyWarnings.length > 0;
     const skippedProperties = [
       ...syncPayload.skippedProperties.map((property) =>
         property.property ? `${property.property}: ${property.reason}` : `${property.field}: ${property.reason}`
       ),
-      ...(retriedWithoutCustomProperties
-        ? syncPayload.customPropertyKeys.map((property) => `${property}: HubSpot rejected optional custom property`)
-        : [])
+      ...customPropertyWarnings
     ];
 
     console.log("[hubspot-contact] AI details saved as note.", {
@@ -228,6 +208,7 @@ router.post(
       updated: Boolean(existingContactId),
       noteId,
       partialPropertySync,
+      customPropertiesUpdated: customPropertySync.updated,
       skippedProperties,
       message: hubSpotSyncMessage(created, partialPropertySync)
     });
@@ -375,12 +356,12 @@ export function compactProfileRequestBody(body: unknown): unknown {
 
 function hubSpotSyncMessage(created: boolean, partialPropertySync: boolean): string {
   if (partialPropertySync) {
-    return created
-      ? "HubSpot contact created. AI details saved as a note because custom HubSpot properties are not configured."
-      : "HubSpot contact updated. AI details saved as a note because custom HubSpot properties are not configured.";
+    return `${created ? "HubSpot contact was created" : "HubSpot contact was updated"} and the AI summary note was saved, but custom properties could not be created or updated.`;
   }
 
-  return created ? "HubSpot contact created. AI details saved as a note." : "HubSpot contact updated. AI details saved as a note.";
+  return created
+    ? "HubSpot contact created. AI summary note and LHA sales context properties saved."
+    : "HubSpot contact updated. AI summary note and LHA sales context properties saved.";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,6 +1,10 @@
 import type { LinkedInProfile } from "@linkedin-hubspot-ai/shared";
 import { AppError } from "../utils/errors.js";
-import { type HubSpotContactProperties, mapProfileToHubSpotProperties } from "../utils/hubspotMapping.js";
+import {
+  type HubSpotContactProperties,
+  type HubSpotContactPropertyDefinition,
+  mapProfileToHubSpotProperties
+} from "../utils/hubspotMapping.js";
 
 const HUBSPOT_API_BASE = "https://api.hubapi.com";
 const NOTE_TO_CONTACT_ASSOCIATION_TYPE_ID = 202;
@@ -12,6 +16,11 @@ type HubSpotObjectResponse = {
 
 type HubSpotSearchResponse = {
   results?: Array<HubSpotObjectResponse>;
+};
+
+export type HubSpotPropertyEnsureResult = {
+  ready: string[];
+  failed: Array<{ property: string; message: string }>;
 };
 
 type HubSpotErrorResponse = {
@@ -278,6 +287,46 @@ export class HubSpotService {
     return result.data.id;
   }
 
+  async ensureContactProperties(definitions: HubSpotContactPropertyDefinition[]): Promise<HubSpotPropertyEnsureResult> {
+    const result: HubSpotPropertyEnsureResult = { ready: [], failed: [] };
+
+    for (const definition of definitions) {
+      try {
+        await this.request<unknown>(`/crm/v3/properties/contacts/${encodeURIComponent(definition.name)}`, { method: "GET" });
+        result.ready.push(definition.name);
+        continue;
+      } catch (error) {
+        if (!(error instanceof AppError) || error.statusCode !== 404) {
+          result.failed.push({ property: definition.name, message: safeHubSpotPropertyError(error) });
+          continue;
+        }
+      }
+
+      try {
+        await this.request<unknown>("/crm/v3/properties/contacts", {
+          method: "POST",
+          body: JSON.stringify(definition)
+        });
+        result.ready.push(definition.name);
+      } catch (error) {
+        if (error instanceof AppError && error.statusCode === 409) {
+          result.ready.push(definition.name);
+          continue;
+        }
+
+        result.failed.push({ property: definition.name, message: safeHubSpotPropertyError(error) });
+      }
+    }
+
+    if (result.failed.length) {
+      console.warn("[hubspot-properties] Some LHA contact properties could not be prepared.", {
+        properties: result.failed.map((item) => item.property)
+      });
+    }
+
+    return result;
+  }
+
   async createNoteForContact(contactId: string, noteBody: string): Promise<string> {
     const result = await this.request<HubSpotObjectResponse>("/crm/v3/objects/notes", {
       method: "POST",
@@ -353,4 +402,12 @@ export class HubSpotService {
 function maskHubSpotId(value: string): string {
   const trimmedValue = value.trim();
   return trimmedValue.length <= 4 ? "****" : `****${trimmedValue.slice(-4)}`;
+}
+
+function safeHubSpotPropertyError(error: unknown): string {
+  if (error instanceof AppError) {
+    return error.message;
+  }
+
+  return error instanceof Error ? error.message : "HubSpot property request failed.";
 }

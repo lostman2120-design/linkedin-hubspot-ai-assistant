@@ -6,4 +6,4 @@ const injectedApiBaseUrl =
 
 export const EXTENSION_DEFAULT_API_BASE_URL = injectedApiBaseUrl || "https://linkedin-hubspot-ai-assistant.onrender.com";
 export const EXTENSION_VERSION =
-  typeof __EXTENSION_VERSION__ === "string" && __EXTENSION_VERSION__.trim() ? __EXTENSION_VERSION__.trim() : "0.3.0";
+  typeof __EXTENSION_VERSION__ === "string" && __EXTENSION_VERSION__.trim() ? __EXTENSION_VERSION__.trim() : "0.4.0";

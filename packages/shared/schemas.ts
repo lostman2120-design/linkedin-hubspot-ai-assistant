@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { DEFAULT_SELLER_CONTEXT, DEFAULT_USER_SETTINGS, DM_TONES, MESSAGE_TYPES, SELLER_CONTEXT_FIELD_LIMITS } from "./constants.js";
+import {
+  DEFAULT_SELLER_CONTEXT,
+  DEFAULT_USER_SETTINGS,
+  DM_TONES,
+  MESSAGE_TYPES,
+  RECOMMENDED_ACTIONS,
+  SELLER_CONTEXT_FIELD_LIMITS
+} from "./constants.js";
 import { PROFILE_TEXT_LIMITS } from "./profileCompaction.js";
 
 const readableString = z.string().trim().min(1, "This field is required.");
@@ -116,7 +123,7 @@ export const ScoreEvidenceSchema = z.object({
 });
 
 export const ScoringMetadataSchema = z.object({
-  scoringVersion: z.string().trim().default("0.3.0"),
+  scoringVersion: z.string().trim().default("0.4.0"),
   finalScore: z.number().int().min(0).max(100).default(0),
   fitLabel: z.enum(["Strong fit", "Possible fit", "Weak fit", "Not enough data"]).default("Not enough data"),
   confidence: ConfidenceSchema.default("low"),
@@ -126,6 +133,62 @@ export const ScoringMetadataSchema = z.object({
   disqualifierCount: z.number().int().min(0).max(100).default(0),
   analysisDepth: z.enum(["limited", "standard", "deep"]).default("limited")
 });
+
+export const RecommendedActionSchema = z.enum(RECOMMENDED_ACTIONS);
+
+export const OutreachStrategySchema = z.object({
+  whyRelevant: readableString.max(700),
+  bestAngle: readableString.max(300),
+  painHypothesis: readableString.max(700),
+  whatToAvoid: readableString.max(700),
+  suggestedCTA: readableString.max(400)
+});
+
+export function recommendedActionForScore(leadScore: number): (typeof RECOMMENDED_ACTIONS)[number] {
+  if (leadScore >= 80) {
+    return "Pursue now";
+  }
+
+  if (leadScore >= 55) {
+    return "Research more";
+  }
+
+  if (leadScore >= 35) {
+    return "Low priority";
+  }
+
+  return "Do not contact yet";
+}
+
+export function normalizeRecommendedAction(value: unknown, leadScore: number): (typeof RECOMMENDED_ACTIONS)[number] {
+  if (typeof value !== "string") {
+    return recommendedActionForScore(leadScore);
+  }
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/\s+/g, " ");
+
+  if (["pursue", "pursue now", "contact now"].includes(normalized)) {
+    return "Pursue now";
+  }
+
+  if (["research", "research more", "needs research"].includes(normalized)) {
+    return "Research more";
+  }
+
+  if (normalized === "low priority") {
+    return "Low priority";
+  }
+
+  if (["do not contact", "do not contact yet", "dont contact yet"].includes(normalized)) {
+    return "Do not contact yet";
+  }
+
+  return recommendedActionForScore(leadScore);
+}
 
 export const LinkedInVisibleProfileContextSchema = z.object({
   identity: z
@@ -220,26 +283,65 @@ export const UserSettingsSchema = z.object({
   defaultFollowUpDays: z.number().int().min(1).max(60).default(DEFAULT_USER_SETTINGS.defaultFollowUpDays)
 });
 
-export const ProfileAnalysisSchema = z.object({
-  leadScore: z.number().int().min(0).max(100),
-  fitLabel: z.enum(["Strong fit", "Possible fit", "Weak fit", "Not enough data"]).default("Not enough data"),
-  persona: readableString,
-  painPoints: z.array(z.string().trim().min(1)).max(6),
-  icebreaker: readableString,
-  recommendedAction: readableString,
-  recommendedNextAction: z.string().trim().default("Review the profile and decide whether to reach out."),
-  confidence: ConfidenceSchema,
-  positiveSignals: z.array(z.string().trim().min(1)).max(8).default([]),
-  negativeSignals: z.array(z.string().trim().min(1)).max(8).default([]),
-  missingInformation: z.array(z.string().trim().min(1)).max(8).default([]),
-  riskWarnings: z.array(z.string().trim().min(1)).max(8).default([]),
-  recommendedOutreachAngle: z.string().trim().default("Research first"),
-  whyThisAngle: z.string().trim().default("There is not enough visible context to recommend a more specific angle."),
-  whatToAvoid: z.array(z.string().trim().min(1)).max(8).default([]),
-  scoreEvidence: z.array(ScoreEvidenceSchema).max(20).default([]),
-  scoringMetadata: ScoringMetadataSchema.default({}),
-  dmVariants: z.array(DmVariantSchema).max(3).default([])
-});
+export const ProfileAnalysisSchema = z
+  .object({
+    leadScore: z.number().int().min(0).max(100),
+    fitLabel: z.enum(["Strong fit", "Possible fit", "Weak fit", "Not enough data"]).default("Not enough data"),
+    persona: readableString,
+    painPoints: z.array(z.string().trim().min(1)).max(6),
+    icebreaker: readableString,
+    recommendedAction: z.unknown().optional(),
+    recommendedNextAction: z.string().trim().default("Review the profile and decide whether to reach out."),
+    confidence: ConfidenceSchema,
+    positiveSignals: z.array(z.string().trim().min(1)).max(8).default([]),
+    negativeSignals: z.array(z.string().trim().min(1)).max(8).default([]),
+    missingInformation: z.array(z.string().trim().min(1)).max(8).default([]),
+    riskWarnings: z.array(z.string().trim().min(1)).max(8).default([]),
+    recommendedOutreachAngle: z.string().trim().default("Research first"),
+    whyThisAngle: z.string().trim().default("There is not enough visible context to recommend a more specific angle."),
+    whatToAvoid: z.array(z.string().trim().min(1)).max(8).default([]),
+    outreachStrategy: z.unknown().optional(),
+    scoreEvidence: z.array(ScoreEvidenceSchema).max(20).default([]),
+    scoringMetadata: ScoringMetadataSchema.default({}),
+    dmVariants: z.array(DmVariantSchema).max(3).default([])
+  })
+  .transform((value) => ({
+    ...value,
+    recommendedAction: normalizeRecommendedAction(value.recommendedAction, value.leadScore),
+    outreachStrategy: normalizeOutreachStrategy(value.outreachStrategy, value)
+  }));
+
+function normalizeOutreachStrategy(
+  value: unknown,
+  fallback: {
+    recommendedOutreachAngle: string;
+    whyThisAngle: string;
+    painPoints: string[];
+    whatToAvoid: string[];
+  }
+): z.infer<typeof OutreachStrategySchema> {
+  const input = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const text = (field: string, defaultValue: string, maxLength: number) => {
+    const raw = input[field];
+    if (typeof raw !== "string" || !raw.trim()) {
+      return defaultValue;
+    }
+
+    return raw.replace(/\s+/g, " ").trim().slice(0, maxLength);
+  };
+
+  return {
+    whyRelevant: text("whyRelevant", fallback.whyThisAngle || "More visible evidence is needed to confirm relevance.", 700),
+    bestAngle: text("bestAngle", fallback.recommendedOutreachAngle || "Research first", 300),
+    painHypothesis: text("painHypothesis", fallback.painPoints[0] || "The prospect's current pain is not confirmed.", 700),
+    whatToAvoid: text(
+      "whatToAvoid",
+      fallback.whatToAvoid.join("; ") || "Avoid assumptions that are not supported by visible profile evidence.",
+      700
+    ),
+    suggestedCTA: text("suggestedCTA", "Ask one short, low-pressure question.", 400)
+  };
+}
 
 export const GeneratedDmSchema = z.object({
   message: readableString.max(1200),
@@ -257,6 +359,7 @@ export const HubSpotSyncResultSchema = z.object({
   updated: z.boolean(),
   noteId: readableString.optional(),
   partialPropertySync: z.boolean().optional(),
+  customPropertiesUpdated: z.boolean().optional(),
   skippedProperties: z.array(z.string().trim().min(1)).optional(),
   message: z.string().trim().optional()
 });

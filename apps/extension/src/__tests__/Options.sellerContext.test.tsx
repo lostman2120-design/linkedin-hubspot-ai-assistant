@@ -84,6 +84,43 @@ afterEach(() => {
 });
 
 describe("Options Seller Context section", () => {
+  it("starts with a disabled template placeholder without changing Seller Context", async () => {
+    await renderOptions();
+
+    const select = container?.querySelector<HTMLSelectElement>("#sellerContextTemplate");
+    const placeholder = select?.querySelector<HTMLOptionElement>('option[value=""]');
+    const applyButton = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Apply template");
+    const productNameInput = container?.querySelector<HTMLInputElement>("#sellerContext-productOrServiceName");
+
+    expect(select?.value).toBe("");
+    expect(select?.selectedOptions[0]?.textContent).toBe("Select a starter template...");
+    expect(placeholder?.disabled).toBe(true);
+    expect(applyButton?.hasAttribute("disabled")).toBe(true);
+    expect(productNameInput?.value).toBe(DEFAULT_USER_SETTINGS.sellerContext.productOrServiceName);
+  });
+
+  it("loads saved Seller Context while keeping the template selector on its placeholder", async () => {
+    const savedSettings = {
+      ...DEFAULT_USER_SETTINGS,
+      sellerContext: {
+        ...DEFAULT_USER_SETTINGS.sellerContext,
+        productOrServiceName: "Saved Customer Product",
+        brandVoice: "Saved customer voice"
+      }
+    };
+
+    await renderOptions({ [SETTINGS_KEY]: savedSettings });
+
+    const select = container?.querySelector<HTMLSelectElement>("#sellerContextTemplate");
+    const productNameInput = container?.querySelector<HTMLInputElement>("#sellerContext-productOrServiceName");
+    const brandVoiceInput = container?.querySelector<HTMLTextAreaElement>("#sellerContext-brandVoice");
+
+    expect(select?.value).toBe("");
+    expect(select?.selectedOptions[0]?.textContent).toBe("Select a starter template...");
+    expect(productNameInput?.value).toBe("Saved Customer Product");
+    expect(brandVoiceInput?.value).toBe("Saved customer voice");
+  });
+
   it("renders Seller Context fields and saves edited values", async () => {
     await renderOptions();
 
@@ -110,5 +147,39 @@ describe("Options Seller Context section", () => {
     expect(saved.sellerContext.productOrServiceName).toBe("WorkflowOS");
     expect(saved.targetRoles).toBe(DEFAULT_USER_SETTINGS.targetRoles);
     expect(container?.textContent).toContain("Settings saved.");
+  });
+
+  it("asks before replacing existing Seller Context and applies the selected template after confirmation", async () => {
+    const confirmMock = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await renderOptions();
+
+    const select = container?.querySelector<HTMLSelectElement>("#sellerContextTemplate");
+    const applyButton = Array.from(container?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Apply template");
+    const productNameInput = container?.querySelector<HTMLInputElement>("#sellerContext-productOrServiceName");
+
+    expect(productNameInput?.value).toBe(DEFAULT_USER_SETTINGS.sellerContext.productOrServiceName);
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+      valueSetter?.call(select, "hubspot-consultant");
+      select?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(productNameInput?.value).toBe(DEFAULT_USER_SETTINGS.sellerContext.productOrServiceName);
+
+    await act(async () => {
+      applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(confirmMock).toHaveBeenCalled();
+    expect(productNameInput?.value).toBe(DEFAULT_USER_SETTINGS.sellerContext.productOrServiceName);
+
+    confirmMock.mockReturnValue(true);
+    await act(async () => {
+      applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(productNameInput?.value).toBe("HubSpot consulting and implementation");
+    expect(container?.textContent).toContain("template applied");
   });
 });
