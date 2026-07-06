@@ -210,13 +210,13 @@ export function buildHubSpotAnalysisNoteBody(input: {
   userSettings?: UserSettings;
 }): string {
   const profileUrl = getProfileUrl(input.profile);
-  const evidence = input.analysis.scoreEvidence ?? [];
+  const evidence = dedupeNoteEvidence(input.analysis.scoreEvidence ?? []);
   const scoringMetadata = input.analysis.scoringMetadata;
   const outreachStrategy = safeOutreachStrategy(input.analysis);
   const analyzedAt = new Date().toISOString();
   const fitLabel = input.analysis.fitLabel ?? leadFitLabel(input.analysis.leadScore);
   const recommendedAction = normalizeRecommendedAction(input.analysis.recommendedAction, input.analysis.leadScore);
-  const actionReason = cleanProperty(input.analysis.whyThisAngle) ?? outreachStrategy.whyRelevant;
+  const actionReason = cleanProperty(input.analysis.actionReason) ?? decisionReasonFallback(recommendedAction);
 
   return [
     `<strong>LinkedIn to HubSpot AI Assistant Summary</strong>`,
@@ -359,7 +359,7 @@ export function buildLhaPropertyValues(analysis: ProfileAnalysis, analyzedAt: st
     lha_recommended_action: normalizeRecommendedAction(analysis.recommendedAction, analysis.leadScore),
     lha_confidence: String(confidenceAsNumber(analysis.confidence)),
     lha_outreach_angle: outreachStrategy.bestAngle,
-    lha_main_reason: outreachStrategy.whyRelevant,
+    lha_main_reason: cleanProperty(analysis.actionReason) ?? outreachStrategy.whyRelevant,
     lha_main_risk: mainRisk,
     lha_missing_info: analysis.missingInformation?.join("; "),
     lha_last_analyzed_at: analyzedAt,
@@ -398,6 +398,22 @@ function confidenceAsNumber(confidence: ProfileAnalysis["confidence"]): number {
   }
 
   return 30;
+}
+
+function decisionReasonFallback(action: ProfileAnalysis["recommendedAction"]): string {
+  if (action === "Pursue now") {
+    return "Multiple visible ICP signals support timely outreach.";
+  }
+
+  if (action === "Research more") {
+    return "Potential fit is visible, but important buying and company context is still missing.";
+  }
+
+  if (action === "Low priority") {
+    return "The visible profile has limited evidence of fit with the saved ICP and Seller Context.";
+  }
+
+  return "The visible profile does not currently provide enough relevant evidence to justify outreach.";
 }
 
 function propertyDefinition(
@@ -489,12 +505,25 @@ function truncateNoteText(value: string, maxLength: number): string {
   const shortened = cleaned.slice(0, availableLength + 1);
   const sentenceEnd = Math.max(shortened.lastIndexOf(". "), shortened.lastIndexOf("! "), shortened.lastIndexOf("? "));
   if (sentenceEnd >= Math.floor(availableLength * 0.55)) {
-    return `${shortened.slice(0, sentenceEnd + 1).trim()}...`;
+    return `${shortened.slice(0, sentenceEnd + 1).trim()} ...`;
   }
 
   const wordEnd = shortened.lastIndexOf(" ", availableLength);
   const end = wordEnd >= Math.floor(availableLength * 0.55) ? wordEnd : availableLength;
   return `${shortened.slice(0, end).trimEnd()}...`;
+}
+
+function dedupeNoteEvidence(items: ScoreEvidence[]): ScoreEvidence[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.basis}:${item.summary.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`;
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
 }
 
 function dmVariantsRow(

@@ -79,4 +79,153 @@ describe("evidence-based lead scoring", () => {
     expect(evidenceText).not.toContain("company size is");
     expect(context.scoreEvidence.some((item) => item.signalType === "missing" && item.category === "company_size")).toBe(true);
   });
+
+  it("does not count LinkedIn URL or profile labels as pain-point evidence", () => {
+    const context = buildLeadScoringContext(
+      {
+        fullName: "Jordan Lee",
+        profileUrl: "https://www.linkedin.com/in/jordan/",
+        visibleTextSample: "LinkedIn profile LinkedIn URL https://www.linkedin.com/in/jordan/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(context.decisionSignals.operationalPainEvidence).toBe(false);
+    expect(context.scoreEvidence.filter((item) => item.signalType === "positive" && item.category === "pain_point")).toHaveLength(0);
+  });
+
+  it("does not turn a Founder title alone into Strong fit", () => {
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 82,
+        fitLabel: "Strong fit",
+        persona: "Founder",
+        painPoints: ["Unknown"],
+        icebreaker: "Noticed your founder role.",
+        recommendedAction: "Pursue now",
+        confidence: "high"
+      },
+      {
+        fullName: "Taylor Morgan",
+        headline: "Founder",
+        companyName: "Stealth Company",
+        currentRoleCompany: "Stealth Company",
+        profileUrl: "https://www.linkedin.com/in/taylor/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(normalized.fitLabel).not.toBe("Strong fit");
+    expect(normalized.leadScore).toBeLessThanOrEqual(54);
+    expect(normalized.recommendedAction).not.toBe("Pursue now");
+  });
+
+  it("keeps a high-profile philanthropy founder fixture below Strong fit", () => {
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 74,
+        fitLabel: "Strong fit",
+        persona: "High-profile founder and philanthropist",
+        painPoints: ["LinkedIn prospecting"],
+        icebreaker: "Noticed your foundation work.",
+        recommendedAction: "Research more",
+        confidence: "high"
+      },
+      {
+        fullName: "Bill Gates",
+        headline: "Co-chair at Gates Foundation | Founder | Philanthropist",
+        companyName: "Gates Foundation",
+        currentRoleCompany: "Gates Foundation",
+        about: "Focused on global health, education, philanthropy, and nonprofit initiatives.",
+        profileUrl: "https://www.linkedin.com/in/williamhgates/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(normalized.fitLabel).not.toBe("Strong fit");
+    expect(normalized.leadScore).toBeLessThanOrEqual(39);
+    expect(["Low priority", "Do not contact yet"]).toContain(normalized.recommendedAction);
+    expect(normalized.actionReason).toContain("outside the saved commercial ICP");
+    expect(normalized.actionReason).not.toMatch(/DM|message angle/i);
+  });
+
+  it("allows Strong fit when several independent ICP and operational signals are visible", () => {
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 90,
+        fitLabel: "Strong fit",
+        persona: "RevOps buyer",
+        painPoints: ["CRM hygiene", "Outbound workflow quality"],
+        icebreaker: "Noticed your RevOps work.",
+        recommendedAction: "Pursue now",
+        confidence: "high"
+      },
+      {
+        fullName: "Avery Johnson",
+        headline: "RevOps Lead at Acme B2B SaaS",
+        companyName: "Acme B2B SaaS",
+        currentRoleCompany: "Acme B2B SaaS",
+        about: "Owns HubSpot CRM hygiene, outbound lead generation, and sales operations for a 51-200 employees B2B SaaS team.",
+        profileUrl: "https://www.linkedin.com/in/avery/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(normalized.fitLabel).toBe("Strong fit");
+    expect(normalized.leadScore).toBeGreaterThanOrEqual(80);
+    expect(normalized.recommendedAction).toBe("Pursue now");
+  });
+
+  it("deduplicates repeated AI inferences and strips URLs from evidence", () => {
+    const repeatedInference = {
+      id: "ai-inference-1",
+      signalType: "positive" as const,
+      basis: "inference" as const,
+      category: "technology" as const,
+      summary: "May influence CRM workflow decisions",
+      evidenceText: "LinkedIn URL: https://www.linkedin.com/in/avery/ RevOps Lead at Acme",
+      sourceSection: "headline" as const,
+      confidence: "Medium" as const,
+      scoreImpact: 5
+    };
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 70,
+        persona: "RevOps lead",
+        painPoints: ["CRM hygiene"],
+        icebreaker: "Noticed your RevOps work.",
+        recommendedAction: "Research more",
+        confidence: "medium",
+        scoreEvidence: [repeatedInference, { ...repeatedInference, id: "ai-inference-2" }]
+      },
+      {
+        fullName: "Avery Johnson",
+        headline: "RevOps Lead at Acme",
+        profileUrl: "https://www.linkedin.com/in/avery/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(normalized.scoreEvidence.filter((item) => item.summary === repeatedInference.summary)).toHaveLength(1);
+    expect(JSON.stringify(normalized.scoreEvidence)).not.toContain("https://www.linkedin.com");
+  });
+
+  it("does not trust a company extracted from a low-confidence unrelated source", () => {
+    const context = buildLeadScoringContext(
+      {
+        fullName: "Avery Johnson",
+        headline: "Independent advisor",
+        companyName: "Unrelated Enterprise",
+        extractionSources: { companyName: "generic related-company link" },
+        contextConfidence: "low",
+        profileUrl: "https://www.linkedin.com/in/avery/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(context.decisionSignals.reliableCompany).toBe(false);
+    expect(context.scoreEvidence).toContainEqual(
+      expect.objectContaining({ signalType: "missing", category: "company" })
+    );
+  });
 });

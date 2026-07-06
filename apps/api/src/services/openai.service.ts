@@ -366,6 +366,7 @@ Return one JSON object with these exact fields:
 - missingInformation: an array of short English strings
 - riskWarnings: an array of short English strings
 - recommendedAction: exactly one of "Pursue now", "Research more", "Low priority", or "Do not contact yet"
+- actionReason: a concise English explanation of why recommendedAction is appropriate; explain the sales decision, not the DM wording
 - recommendedNextAction: a short English sentence
 - recommendedOutreachAngle: a short English label such as Feedback request, Soft opener, Direct pitch, Research first, or Skip / not a good fit
 - whyThisAngle: a short English explanation
@@ -402,6 +403,11 @@ Compact valid DM variant example:
 }
 
 Do not use placeholder values. Calculate leadScore from the visible profile and ICP settings.
+Do not use LinkedIn URLs, LinkedIn source labels, or the fact that this is a LinkedIn profile as pain-point evidence.
+A Founder, CEO, or Lead keyword alone is not enough for Strong fit.
+Strong fit requires multiple independent ICP signals. Missing company size lowers confidence to medium or low.
+When industry, company size, operational pain, and buyer relevance are weak or missing, use Research more or Low priority even if seniority is visible.
+actionReason must explain the Recommended Action using visible matches, missing criteria, and risks. It must not describe the DM angle.
 Do not overclaim. Separate visible facts from cautious inferences in the signal arrays.
 Do not invent facts that are not visible in the LinkedIn profile or saved Seller Context.
 If evidence is insufficient, set recommendedAction to "Research more" or "Low priority".

@@ -935,7 +935,9 @@ export function SidebarApp() {
               <span className={`lhai-decision-badge lhai-decision-${recommendedActionClass(renderedAnalysis.recommendedAction)}`}>
                 {renderedAnalysis.recommendedAction}
               </span>
-              <p className="lhai-value lhai-muted">{RECOMMENDED_ACTION_DESCRIPTIONS[renderedAnalysis.recommendedAction]}</p>
+              <p className="lhai-value lhai-muted">
+                {renderedAnalysis.actionReason || RECOMMENDED_ACTION_DESCRIPTIONS[renderedAnalysis.recommendedAction]}
+              </p>
             </>
           ) : (
             <p className="lhai-value lhai-muted">Analyze this profile to see whether the lead is worth pursuing.</p>

@@ -15,6 +15,7 @@ const analysis = ProfileAnalysisSchema.parse({
   painPoints: ["Manual CRM updates", "Inconsistent follow-up"],
   icebreaker: "Noticed your team is scaling outbound while keeping CRM data clean.",
   recommendedAction: "Pursue now",
+  actionReason: "The visible sales leadership role matches the saved ICP.",
   recommendedNextAction: "Send a concise first DM and save the lead context in HubSpot.",
   outreachStrategy: {
     whyRelevant: "The visible sales leadership role matches the saved ICP.",
@@ -276,9 +277,35 @@ describe("mapProfileToHubSpotProperties", () => {
       }
     });
 
-    expect(noteBody).toContain("Reliable visible evidence supports this fit....");
+    expect(noteBody).toContain("Reliable visible evidence supports this fit. ...");
     expect(noteBody).not.toContain("END_MARKER");
     expect(noteBody).not.toMatch(/eviden\.\.\./);
+  });
+
+  it("shows a repeated AI inference only once in the HubSpot note", () => {
+    const repeatedInference = {
+      id: "inference-1",
+      signalType: "positive" as const,
+      basis: "inference" as const,
+      category: "technology" as const,
+      summary: "May influence CRM workflow decisions",
+      evidenceText: "RevOps Lead",
+      sourceSection: "headline" as const,
+      confidence: "Medium" as const,
+      scoreImpact: 5
+    };
+    const noteBody = buildHubSpotAnalysisNoteBody({
+      profile: {
+        fullName: "Avery Johnson",
+        profileUrl: "https://www.linkedin.com/in/avery-johnson/"
+      },
+      analysis: {
+        ...analysis,
+        scoreEvidence: [repeatedInference, { ...repeatedInference, id: "inference-2" }]
+      }
+    });
+
+    expect(noteBody.match(/May influence CRM workflow decisions/g)).toHaveLength(1);
   });
 
   it("maps LinkedIn profile URL to HubSpot's default hs_linkedin_url property", () => {

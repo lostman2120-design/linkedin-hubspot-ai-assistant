@@ -247,7 +247,7 @@ describe("LinkedIn profile extraction", () => {
     document.title = "Bill Gates - Co-chair, Bill & Melinda Gates Foundation | LinkedIn";
     document.body.innerHTML = `
       <main>
-        <section>
+        <section data-view-name="profile-top-card">
           <a href="/company/gates-foundation/"><span aria-hidden="true">Gates Foundation</span></a>
         </section>
       </main>
@@ -264,6 +264,26 @@ describe("LinkedIn profile extraction", () => {
       profileUrl: "https://www.linkedin.com/in/williamhgates/"
     });
     expect(validateLinkedInProfileIdentity(profile)).toEqual({ ok: true });
+  });
+
+  it("ignores unrelated company links outside the top card and current experience", () => {
+    document.body.innerHTML = `
+      <main>
+        <section>
+          <h1>Avery Johnson</h1>
+          <div class="text-body-medium break-words">Independent advisor</div>
+        </section>
+        <aside>
+          <p>People also viewed</p>
+          <a href="/company/unrelated-enterprise/"><span aria-hidden="true">Unrelated Enterprise</span></a>
+        </aside>
+      </main>
+    `;
+
+    const profile = extractLinkedInProfile();
+
+    expect(profile.companyName).toBeUndefined();
+    expect(profile.extractionSources?.companyName).toBeUndefined();
   });
 
   it("does not treat a company-only value as a person name", () => {

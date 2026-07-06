@@ -33,6 +33,12 @@ export function buildLeadScoringInstruction(hasTargetCustomerProfile: boolean): 
     "Do not default to 0 unless the profile is clearly irrelevant, contains almost no useful visible information, or parsing fully fails.",
     fitBasis,
     "Scoring guide: 80-100 = strong fit, 60-79 = good fit, 40-59 = possible fit, 15-39 = weak fit, 0-14 = poor fit.",
+    "A role or seniority keyword alone must never produce Strong fit.",
+    "Strong fit requires multiple independent signals such as target role, target industry, company-size evidence, operational pain evidence, buyer relevance, and a clear Seller Context connection.",
+    "Never score the word LinkedIn when it comes from a URL, source label, tool context, or the fact that this is a LinkedIn profile.",
+    "Treat lead as a role only in a clear title phrase such as Growth Lead, Sales Lead, or RevOps Lead.",
+    "If company size is missing, confidence must be medium or low. If industry and operational pain are also weak, choose Research more or Low priority.",
+    "Public-figure, philanthropy, nonprofit, education, government, investor, or enterprise-scale context should not be treated as ICP fit unless explicit CRM, RevOps, B2B sales, outbound, or lead-generation relevance is visible.",
     "Use the score and visible evidence when choosing the allowed recommendedAction value."
   ].join(" ");
 }
@@ -75,6 +81,7 @@ export function createEnglishOnlyProfileAnalysisSchema() {
         painPoints: value.painPoints,
         icebreaker: value.icebreaker,
         recommendedAction: value.recommendedAction,
+        actionReason: value.actionReason,
         recommendedNextAction: value.recommendedNextAction,
         positiveSignals: value.positiveSignals,
         negativeSignals: value.negativeSignals,

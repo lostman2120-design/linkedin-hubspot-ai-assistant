@@ -43,6 +43,11 @@ export function normalizeAnalysisResult(raw: unknown): ProfileAnalysis {
     painPoints: normalizeStringArray(input.painPoints, 6, 220),
     icebreaker: normalizeString(input.icebreaker, "", 500),
     recommendedAction: normalizeRecommendedAction(input.recommendedAction, leadScore),
+    actionReason: normalizeString(
+      input.actionReason,
+      "The visible evidence is not sufficient for a stronger sales decision.",
+      700
+    ),
     recommendedNextAction: normalizeString(input.recommendedNextAction, "", 500),
     positiveSignals: normalizeStringArray(input.positiveSignals, 8, 220),
     negativeSignals: normalizeStringArray(input.negativeSignals, 8, 220),

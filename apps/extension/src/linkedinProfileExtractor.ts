@@ -221,7 +221,7 @@ function buildLinkedInProfile(): ExtractionResult {
     };
   }
 
-  const rawCompanyName = pickFirstVisibleValue([
+  const rawCompanyName = pickFirstReliableCompanyValue([
     ...candidatesFromSelectors(
       [
         "main [data-view-name='profile-top-card'] button[aria-label*='Current company'] span",
@@ -230,14 +230,10 @@ function buildLinkedInProfile(): ExtractionResult {
         "main section:first-of-type button[aria-label*='Current company']",
         "main [data-view-name='profile-top-card'] a[href*='/company/'] span",
         "main [data-view-name='profile-top-card'] a[href*='/company/']",
-        "main section:first-of-type a[href*='/company/'] span",
-        "main section:first-of-type a[href*='/company/']",
         "section:has(#experience) a[href*='/company/'] span",
         "section:has(#experience) a[href*='/company/']",
         "[data-field='experience_company_logo'] span",
-        ".pv-text-details__right-panel a[href*='/company/']",
-        "a[href*='/company/'] span[aria-hidden='true']",
-        "a[href*='/company/']"
+        ".pv-text-details__right-panel a[href*='/company/']"
       ],
       "company selector"
     )
@@ -775,6 +771,17 @@ function hasReasonableNameShape(value: string): boolean {
 
 function pickFirstVisibleValue(candidates: TextCandidate[]): TextCandidate | undefined {
   return uniqueCandidates(candidates).find((candidate) => Boolean(cleanSingleLineField(candidate.value)));
+}
+
+function pickFirstReliableCompanyValue(candidates: TextCandidate[]): TextCandidate | undefined {
+  return uniqueCandidates(candidates).find((candidate) => {
+    const value = cleanCompanyField(candidate.value);
+    if (!value || value.length > 140 || boilerplateLinePattern.test(value)) {
+      return false;
+    }
+
+    return !/\b(people also viewed|promoted|suggested|advertisement|followers|connections)\b/i.test(value);
+  });
 }
 
 function visibleSections(): HTMLElement[] {

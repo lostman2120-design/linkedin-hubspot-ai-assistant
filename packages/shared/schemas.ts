@@ -291,6 +291,7 @@ export const ProfileAnalysisSchema = z
     painPoints: z.array(z.string().trim().min(1)).max(6),
     icebreaker: readableString,
     recommendedAction: z.unknown().optional(),
+    actionReason: z.string().trim().default("The visible evidence is not sufficient for a stronger sales decision."),
     recommendedNextAction: z.string().trim().default("Review the profile and decide whether to reach out."),
     confidence: ConfidenceSchema,
     positiveSignals: z.array(z.string().trim().min(1)).max(8).default([]),
