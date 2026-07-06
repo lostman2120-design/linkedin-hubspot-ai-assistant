@@ -69,6 +69,18 @@ const NON_ICP_CONTEXT_TERMS = [
   "family office"
 ];
 
+const STRONG_COMMERCIAL_SIGNAL_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
+  { label: "HubSpot Consultant", pattern: /\b(?:hubspot\b.{0,80}\bconsultant|consultant\b.{0,80}\bhubspot)\b/i },
+  { label: "HubSpot Partner", pattern: /\b(?:hubspot\b.{0,80}\bpartner|diamond partner\b.{0,80}\bhubspot|hubspot\b.{0,80}\bdiamond partner)\b/i },
+  { label: "HubSpot CRM", pattern: /\b(?:hubspot\b.{0,40}\bcrm|crm\b.{0,40}\bhubspot)\b/i },
+  { label: "RevOps Consultant", pattern: /\b(?:revops\b.{0,80}\bconsultant|consultant\b.{0,80}\brevops)\b/i },
+  { label: "CRM Consultant", pattern: /\b(?:crm\b.{0,80}\bconsultant|consultant\b.{0,80}\bcrm)\b/i },
+  { label: "CRM Implementation", pattern: /\bcrm\s+(?:implementation|migration|operations?)\b/i },
+  { label: "Sales Operations", pattern: /\b(?:sales operations|sales ops)\b/i },
+  { label: "Marketing Operations", pattern: /\b(?:marketing operations|marketing ops)\b/i },
+  { label: "B2B Sales", pattern: /\bb2b\s+sales\b/i }
+];
+
 const UNIVERSAL_LINKEDIN_TERMS = new Set(["linkedin", "profile", "profiles"]);
 
 const POOR_FIT_TERMS = ["student", "intern", "retired", "teacher", "professor", "engineer", "developer"];
@@ -111,6 +123,7 @@ export type LeadDecisionSignals = {
   operationalPainEvidence: boolean;
   buyerRelevance: boolean;
   sellerContextConnection: boolean;
+  strongCommercialContext: boolean;
   reliableCompany: boolean;
   nonIcpContext: boolean;
 };
@@ -228,7 +241,12 @@ function rolePhraseMatches(roleText: string, configuredRoles: string): string[] 
       return /\b(?:growth|sales|marketing|revenue|revops|operations|customer success|product)\s+lead\b/i.test(roleText);
     }
 
-    return containsTerm(roleText, role);
+    if (containsTerm(roleText, role)) {
+      return true;
+    }
+
+    const meaningfulTerms = keywords(role);
+    return meaningfulTerms.length >= 2 && meaningfulTerms.every((term) => containsTerm(roleText, term));
   });
 }
 
@@ -250,6 +268,10 @@ function hasCompanySizeEvidence(text: string): boolean {
   return /\b(?:company size|team size|headcount)\b|\b\d{1,6}\s*(?:-|to)\s*\d{1,6}\s+(?:employees|people|staff|team members)\b|\b\d{1,6}\+?\s+(?:employees|staff|team members)\b/i.test(
     text
   );
+}
+
+function findStrongCommercialMatches(text: string): string[] {
+  return STRONG_COMMERCIAL_SIGNAL_PATTERNS.filter((signal) => signal.pattern.test(text)).map((signal) => signal.label);
 }
 
 function hasReliableCompany(profile: LinkedInProfile): boolean {
@@ -373,6 +395,7 @@ export function buildLeadScoringContext(
   const industryMatches = phraseMatches(text, userSettings.targetIndustries);
   const roleMatches = rolePhraseMatches(roleText, userSettings.targetRoles);
   const painPointMatches = operationalPainMatches(text, userSettings.mainPainPointsSolved);
+  const strongCommercialMatches = findStrongCommercialMatches(text);
   const excludedMatches = scoreKeywordMatches(text, userSettings.excludedRoles, 24);
   const companySizeEvidence = hasCompanySizeEvidence(text);
   const reliableCompany = hasReliableCompany(profile);
@@ -418,6 +441,23 @@ export function buildLeadScoringContext(
     });
     if (relevanceEvidence) {
       scoreEvidence.push(relevanceEvidence);
+    }
+  }
+
+  if (strongCommercialMatches.length > 0) {
+    const impact = Math.min(30, 12 + (strongCommercialMatches.length - 1) * 6);
+    score += impact;
+    matchedSignals.push(...strongCommercialMatches.map((match) => `Strong match: ${match}`));
+    const evidence = evidenceForMatches({
+      sources,
+      matches: strongCommercialMatches,
+      category: "experience",
+      summary: `Strong commercial context is visible: ${strongCommercialMatches.join(", ")}`,
+      scoreImpact: impact,
+      confidence: "High"
+    });
+    if (evidence) {
+      scoreEvidence.push(evidence);
     }
   }
 
@@ -591,12 +631,13 @@ export function buildLeadScoringContext(
   }
 
   const decisionSignals: LeadDecisionSignals = {
-    roleMatch: roleMatches.length > 0,
+    roleMatch: roleMatches.length > 0 || strongCommercialMatches.some((match) => match.includes("Consultant")),
     industryMatch: industryMatches.length > 0,
     companySizeEvidence,
     operationalPainEvidence: painPointMatches.length > 0,
-    buyerRelevance: relevantMatches > 0,
-    sellerContextConnection: productMatches.score > 0,
+    buyerRelevance: relevantMatches > 0 || strongCommercialMatches.length > 0,
+    sellerContextConnection: productMatches.score > 0 || strongCommercialMatches.length > 0,
+    strongCommercialContext: strongCommercialMatches.length >= 2,
     reliableCompany,
     nonIcpContext
   };
@@ -605,7 +646,8 @@ export function buildLeadScoringContext(
     !decisionSignals.industryMatch &&
     !decisionSignals.companySizeEvidence &&
     !decisionSignals.operationalPainEvidence &&
-    !decisionSignals.sellerContextConnection;
+    !decisionSignals.sellerContextConnection &&
+    !decisionSignals.strongCommercialContext;
 
   let finalHeuristicScore = Math.max(0, Math.min(100, Math.round(score)));
   if (roleWithoutSupportingEvidence) {
@@ -613,6 +655,9 @@ export function buildLeadScoringContext(
   }
   if (nonIcpContext) {
     finalHeuristicScore = Math.min(finalHeuristicScore, 39);
+  }
+  if (decisionSignals.strongCommercialContext && !nonIcpContext) {
+    finalHeuristicScore = Math.max(finalHeuristicScore, 72);
   }
 
   const heuristicConfidence: ProfileAnalysis["confidence"] = companySizeEvidence && independentSignalCount >= 4
@@ -694,7 +739,7 @@ export function normalizeProfileAnalysisScore(
     !context.decisionSignals.nonIcpContext;
   let finalScore = Math.max(0, Math.min(100, blendedScore));
 
-  if (lacksCoreSupport) {
+  if (lacksCoreSupport && !context.decisionSignals.strongCommercialContext) {
     finalScore = Math.min(finalScore, 54);
   }
   if (!strongFitEligible) {
@@ -702,6 +747,9 @@ export function normalizeProfileAnalysisScore(
   }
   if (context.decisionSignals.nonIcpContext) {
     finalScore = Math.min(finalScore, 39);
+  }
+  if (context.decisionSignals.strongCommercialContext && !context.decisionSignals.nonIcpContext) {
+    finalScore = Math.max(finalScore, 60);
   }
 
   const finalConfidence = adjustedConfidence(analysis.confidence, context.decisionSignals, independentSignalCount);
@@ -719,7 +767,7 @@ export function normalizeProfileAnalysisScore(
     confidence: finalConfidence,
     scoreEvidence,
     scoringMetadata: buildScoringMetadata(scoreEvidence, finalScore, finalFitLabel, finalConfidence),
-    positiveSignals: (analysis.positiveSignals ?? []).length ? analysis.positiveSignals : context.matchedSignals,
+    positiveSignals: dedupeStrings([...context.matchedSignals, ...(analysis.positiveSignals ?? [])]).slice(0, 8),
     recommendedAction,
     actionReason: buildActionReason(recommendedAction, context.decisionSignals),
     recommendedNextAction: recommendedNextStep(recommendedAction)
@@ -733,7 +781,8 @@ function countDecisionSignals(signals: LeadDecisionSignals): number {
     signals.companySizeEvidence,
     signals.operationalPainEvidence,
     signals.buyerRelevance,
-    signals.sellerContextConnection
+    signals.sellerContextConnection,
+    signals.strongCommercialContext
   ].filter(Boolean).length;
 }
 
@@ -742,7 +791,7 @@ function adjustedConfidence(
   signals: LeadDecisionSignals,
   independentSignalCount: number
 ): ProfileAnalysis["confidence"] {
-  if (independentSignalCount <= 1 || (!signals.reliableCompany && !signals.industryMatch)) {
+  if (independentSignalCount <= 1 || (!signals.reliableCompany && !signals.industryMatch && !signals.strongCommercialContext)) {
     return "low";
   }
 
@@ -791,10 +840,16 @@ function buildActionReason(action: ProfileAnalysis["recommendedAction"], signals
   ].filter((item): item is string => Boolean(item));
 
   if (action === "Pursue now") {
+    if (signals.strongCommercialContext) {
+      return "Strong HubSpot, RevOps, or CRM consulting context and multiple commercial-fit signals are visible.";
+    }
     return "Multiple independent ICP signals are visible, including role, commercial relevance, and a clear connection to the saved Seller Context.";
   }
 
   if (action === "Research more") {
+    if (signals.strongCommercialContext) {
+      return "Strong HubSpot / RevOps / CRM consultant context is visible, but company size or exact buying intent is not fully confirmed, so research more before outreach.";
+    }
     const lead = signals.roleMatch ? "Potential target-role relevance is visible" : "Some commercial relevance may be visible";
     return `${lead}, but ${joinReadableList(missing)} ${missing.length === 1 ? "is" : "are"} not visible or confirmed.`;
   }
@@ -835,6 +890,19 @@ function joinReadableList(items: string[]): string {
   }
 
   return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1] ?? "important buying context"}`;
+}
+
+function dedupeStrings(items: string[]): string[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = normalize(item);
+    if (!key || seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
 }
 
 function findSourceForTerm(sources: EvidenceSource[], term: string): EvidenceSource | undefined {

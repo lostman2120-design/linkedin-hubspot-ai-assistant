@@ -228,4 +228,103 @@ describe("evidence-based lead scoring", () => {
       expect.objectContaining({ signalType: "missing", category: "company" })
     );
   });
+
+  it("keeps a Joris-style HubSpot and RevOps consultant at Possible fit or better", () => {
+    const settings = {
+      ...DEFAULT_USER_SETTINGS,
+      targetRoles: "HubSpot Consultant, RevOps Consultant, CRM Consultant, SDR Manager, Sales Operations Lead",
+      targetIndustries: "HubSpot consulting, RevOps, B2B SaaS, agencies, CRM implementation",
+      mainPainPointsSolved: "HubSpot CRM implementation, CRM hygiene, outbound prospecting, lead generation, RevOps automation"
+    };
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 44,
+        fitLabel: "Possible fit",
+        persona: "HubSpot and RevOps consultant",
+        painPoints: ["CRM workflow quality"],
+        icebreaker: "Noticed your HubSpot and RevOps consulting work.",
+        recommendedAction: "Research more",
+        confidence: "medium"
+      },
+      {
+        fullName: "Joris Milloux",
+        headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+        about: "HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.",
+        profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+      },
+      settings
+    );
+
+    expect(normalized.leadScore).toBeGreaterThanOrEqual(60);
+    expect(["Possible fit", "Strong fit"]).toContain(normalized.fitLabel);
+    expect(["Research more", "Pursue now"]).toContain(normalized.recommendedAction);
+    expect(["medium", "high"]).toContain(normalized.confidence);
+    expect(normalized.actionReason).toBe(
+      "Strong HubSpot / RevOps / CRM consultant context is visible, but company size or exact buying intent is not fully confirmed, so research more before outreach."
+    );
+    const positiveSignals = normalized.positiveSignals.join(" ");
+    expect(positiveSignals).toContain("HubSpot Consultant");
+    expect(positiveSignals).toContain("HubSpot CRM");
+    expect(positiveSignals).toContain("RevOps Consultant");
+    expect(positiveSignals).toContain("CRM Consultant");
+  });
+
+  it("does not lower a strong profile merely because the detailed target lists contain more unmatched options", () => {
+    const profile = {
+      fullName: "Joris Milloux",
+      headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+      about: "HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.",
+      profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+    };
+    const modelAnalysis = {
+      leadScore: 44,
+      persona: "HubSpot and RevOps consultant",
+      painPoints: ["CRM workflow quality"],
+      icebreaker: "Noticed your HubSpot work.",
+      recommendedAction: "Research more" as const,
+      confidence: "medium" as const
+    };
+    const focused = normalizeProfileAnalysisScore(modelAnalysis, profile, {
+      ...DEFAULT_USER_SETTINGS,
+      targetRoles: "HubSpot Consultant",
+      targetIndustries: "RevOps",
+      mainPainPointsSolved: "HubSpot CRM implementation"
+    });
+    const detailed = normalizeProfileAnalysisScore(modelAnalysis, profile, {
+      ...DEFAULT_USER_SETTINGS,
+      targetRoles: "HubSpot Consultant, RevOps Consultant, SDR Manager, VP Sales, Marketing Operations Lead, Recruiting Manager",
+      targetIndustries: "RevOps, B2B SaaS, agencies, recruiting, consulting, sales technology",
+      mainPainPointsSolved: "HubSpot CRM implementation, CRM hygiene, outbound prospecting, lead generation, pipeline reporting"
+    });
+
+    expect(detailed.leadScore).toBeGreaterThanOrEqual(focused.leadScore);
+    expect(detailed.recommendedAction).not.toBe("Low priority");
+  });
+
+  it("adds disqualifiers only when the configured exclusion is visible in the profile", () => {
+    const settings = {
+      ...DEFAULT_USER_SETTINGS,
+      excludedRoles: "government, education-only, consumer brand"
+    };
+    const relevantContext = buildLeadScoringContext(
+      {
+        fullName: "Joris Milloux",
+        headline: "HubSpot CRM Consultant | RevOps",
+        about: "Helping B2B teams improve CRM operations.",
+        profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+      },
+      settings
+    );
+    const excludedContext = buildLeadScoringContext(
+      {
+        fullName: "Jordan Lee",
+        headline: "Government education policy advisor",
+        profileUrl: "https://www.linkedin.com/in/jordan/"
+      },
+      settings
+    );
+
+    expect(relevantContext.scoreEvidence.some((item) => item.signalType === "disqualifier")).toBe(false);
+    expect(excludedContext.scoreEvidence.some((item) => item.signalType === "disqualifier")).toBe(true);
+  });
 });

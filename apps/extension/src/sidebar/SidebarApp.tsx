@@ -273,7 +273,7 @@ export function SidebarApp() {
   const currentPlanLabel = planLabel(licenseState);
   const visibleGeneratedDm = generatedDmProfileUrl === lastAnalyzedProfileUrl ? generatedDm : null;
   const renderedAnalysis = useMemo(() => (analysis ? normalizeAnalysisResult(analysis) : null), [analysis]);
-  const leadScoreDisplay = renderedAnalysis ? (renderedAnalysis.confidence === "low" ? "Fit: Unknown" : String(renderedAnalysis.leadScore)) : "--";
+  const leadScoreDisplay = renderedAnalysis ? (renderedAnalysis.confidence === "low" ? "Not enough data" : String(renderedAnalysis.leadScore)) : "--";
   const showScoringSettingsWarning = !hasLeadScoringSettings(settings);
   const analyzeButtonLabel = status === "analyzing" ? "Analyzing..." : "Analyze Profile";
   const isGeneratingDm = status === "generating_dm";
