@@ -147,6 +147,8 @@ describe("evidence-based lead scoring", () => {
     expect(["Low priority", "Do not contact yet"]).toContain(normalized.recommendedAction);
     expect(normalized.actionReason).toContain("outside the saved commercial ICP");
     expect(normalized.actionReason).not.toMatch(/DM|message angle/i);
+    expect(normalized.positiveSignals.join(" ")).not.toMatch(/non-ICP|public|nonprofit|investor|government/i);
+    expect([...normalized.negativeSignals, ...normalized.riskWarnings].join(" ")).toContain("outside the saved commercial ICP");
   });
 
   it("allows Strong fit when several independent ICP and operational signals are visible", () => {
@@ -249,31 +251,31 @@ describe("evidence-based lead scoring", () => {
       {
         fullName: "Joris Milloux",
         headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
-        about: "HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.",
+        extractionWarnings: ["Limited profile context detected. AI score may be less accurate."],
+        contextConfidence: "medium",
         profileUrl: "https://www.linkedin.com/in/joris-milloux/"
       },
       settings
     );
 
     expect(normalized.leadScore).toBeGreaterThanOrEqual(60);
+    expect(normalized.leadScore).toBeLessThanOrEqual(82);
     expect(["Possible fit", "Strong fit"]).toContain(normalized.fitLabel);
     expect(["Research more", "Pursue now"]).toContain(normalized.recommendedAction);
-    expect(["medium", "high"]).toContain(normalized.confidence);
+    expect(normalized.confidence).toBe("medium");
     expect(normalized.actionReason).toBe(
-      "Strong HubSpot / RevOps / CRM consultant context is visible, but company size or exact buying intent is not fully confirmed, so research more before outreach."
+      "HubSpot / CRM / RevOps consultant context is strong, but profile context is limited, so review before outreach."
     );
-    const positiveSignals = normalized.positiveSignals.join(" ");
-    expect(positiveSignals).toContain("HubSpot Consultant");
-    expect(positiveSignals).toContain("HubSpot CRM");
-    expect(positiveSignals).toContain("RevOps Consultant");
-    expect(positiveSignals).toContain("CRM Consultant");
+    expect(normalized.positiveSignals).toContain("Strong HubSpot / CRM / RevOps consultant context");
+    expect(normalized.positiveSignals.filter((signal) => /hubspot|crm|revops/i.test(signal)).length).toBeLessThanOrEqual(2);
   });
 
   it("does not lower a strong profile merely because the detailed target lists contain more unmatched options", () => {
     const profile = {
       fullName: "Joris Milloux",
       headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
-      about: "HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.",
+      extractionWarnings: ["Limited profile context detected. AI score may be less accurate."],
+      contextConfidence: "medium" as const,
       profileUrl: "https://www.linkedin.com/in/joris-milloux/"
     };
     const modelAnalysis = {
@@ -299,6 +301,70 @@ describe("evidence-based lead scoring", () => {
 
     expect(detailed.leadScore).toBeGreaterThanOrEqual(focused.leadScore);
     expect(detailed.recommendedAction).not.toBe("Low priority");
+  });
+
+  it("allows a score of 90 or more only with deep independent evidence", () => {
+    const sparse = normalizeProfileAnalysisScore(
+      {
+        leadScore: 100,
+        persona: "HubSpot consultant",
+        painPoints: ["CRM workflows"],
+        icebreaker: "Noticed your HubSpot work.",
+        recommendedAction: "Pursue now",
+        confidence: "high"
+      },
+      {
+        fullName: "Joris Milloux",
+        headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+        contextConfidence: "medium",
+        profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+    const deep = normalizeProfileAnalysisScore(
+      {
+        leadScore: 100,
+        persona: "RevOps buyer",
+        painPoints: ["CRM hygiene", "Outbound workflows"],
+        icebreaker: "Noticed your RevOps work.",
+        recommendedAction: "Pursue now",
+        confidence: "high"
+      },
+      {
+        fullName: "Avery Johnson",
+        headline: "RevOps Lead at Acme B2B SaaS",
+        companyName: "Acme B2B SaaS",
+        currentRoleCompany: "Acme B2B SaaS",
+        currentRoleDescription: "Owns HubSpot CRM hygiene, outbound lead generation, and sales operations.",
+        about: "Leads RevOps and CRM implementation for a 51-200 employees B2B SaaS company.",
+        contextConfidence: "high",
+        profileUrl: "https://www.linkedin.com/in/avery/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+    const lowConfidence = normalizeProfileAnalysisScore(
+      {
+        leadScore: 100,
+        persona: "HubSpot consultant",
+        painPoints: ["CRM workflows"],
+        icebreaker: "Noticed your HubSpot work.",
+        recommendedAction: "Pursue now",
+        confidence: "low"
+      },
+      {
+        fullName: "Joris Milloux",
+        headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+        contextConfidence: "low",
+        profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(sparse.leadScore).toBeLessThanOrEqual(82);
+    expect(lowConfidence.leadScore).toBeLessThanOrEqual(54);
+    expect(lowConfidence.fitLabel).not.toBe("Strong fit");
+    expect(deep.leadScore).toBeGreaterThanOrEqual(90);
+    expect(deep.confidence).toBe("high");
   });
 
   it("adds disqualifiers only when the configured exclusion is visible in the profile", () => {

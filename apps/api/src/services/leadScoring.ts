@@ -124,6 +124,8 @@ export type LeadDecisionSignals = {
   buyerRelevance: boolean;
   sellerContextConnection: boolean;
   strongCommercialContext: boolean;
+  hasProfileDepth: boolean;
+  limitedProfileContext: boolean;
   reliableCompany: boolean;
   nonIcpContext: boolean;
 };
@@ -375,6 +377,16 @@ export function buildLeadScoringContext(
   const roleText = stripUniversalLinkedInContext(
     [profile.headline, profile.jobTitle, profile.currentRoleTitle].filter(Boolean).join(" ")
   );
+  const detailedProfileText = stripUniversalLinkedInContext(
+    [
+      profile.about,
+      profile.currentRoleDescription,
+      profile.visibleProfileContext?.about?.text,
+      ...(profile.visibleProfileContext?.experience?.visibleItems ?? [])
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
   const sources = profileEvidenceSources(profile);
   const scoreEvidence: ScoreEvidence[] = [];
   const matchedSignals: string[] = [];
@@ -391,14 +403,19 @@ export function buildLeadScoringContext(
   const targetMatches = userSettings.targetRoles.trim() || userSettings.targetIndustries.trim()
     ? { score: 0, matches: [] as string[] }
     : scoreKeywordMatches(text, userSettings.targetCustomerProfile, 8);
-  const productMatches = scoreKeywordMatches(text, `${userSettings.productOrServiceDescription} ${sellerContextText(userSettings)}`, 8);
+  const productMatches = scoreKeywordMatches(text, `${userSettings.productOrServiceDescription} ${sellerContextText(userSettings)}`, 4);
   const industryMatches = phraseMatches(text, userSettings.targetIndustries);
   const roleMatches = rolePhraseMatches(roleText, userSettings.targetRoles);
-  const painPointMatches = operationalPainMatches(text, userSettings.mainPainPointsSolved);
+  const painPointMatches = operationalPainMatches(detailedProfileText, userSettings.mainPainPointsSolved);
   const strongCommercialMatches = findStrongCommercialMatches(text);
   const excludedMatches = scoreKeywordMatches(text, userSettings.excludedRoles, 24);
   const companySizeEvidence = hasCompanySizeEvidence(text);
   const reliableCompany = hasReliableCompany(profile);
+  const hasProfileDepth = Boolean(detailedProfileText);
+  const limitedProfileContext = !hasProfileDepth ||
+    profile.contextConfidence === "low" ||
+    profile.contextConfidence === "medium" ||
+    (profile.extractionWarnings ?? []).some((warning) => /limited profile context/i.test(warning));
   const operationalContextCount = countMatches(text, OPERATIONAL_PAIN_TERMS);
   const nonIcpContext = countMatches(text, NON_ICP_CONTEXT_TERMS) > 0 && operationalContextCount < 2;
 
@@ -413,7 +430,7 @@ export function buildLeadScoringContext(
   if (seniorityMatches > 0) {
     const impact = Math.min(6, seniorityMatches * 3);
     score += impact;
-    matchedSignals.push("seniority");
+    matchedSignals.push("General seniority signal");
     const seniorityEvidence = evidenceForMatches({
       sources,
       matches: SENIORITY_TERMS.filter((term) => containsTerm(roleText, term)),
@@ -445,9 +462,9 @@ export function buildLeadScoringContext(
   }
 
   if (strongCommercialMatches.length > 0) {
-    const impact = Math.min(30, 12 + (strongCommercialMatches.length - 1) * 6);
+    const impact = strongCommercialMatches.length >= 3 ? 22 : 18;
     score += impact;
-    matchedSignals.push(...strongCommercialMatches.map((match) => `Strong match: ${match}`));
+    matchedSignals.push("Strong HubSpot / CRM / RevOps consultant context");
     const evidence = evidenceForMatches({
       sources,
       matches: strongCommercialMatches,
@@ -478,7 +495,9 @@ export function buildLeadScoringContext(
 
   if (productMatches.score > 0) {
     score += productMatches.score;
-    matchedSignals.push(`product match: ${productMatches.matches.join(", ")}`);
+    if (strongCommercialMatches.length === 0) {
+      matchedSignals.push(`product match: ${productMatches.matches.join(", ")}`);
+    }
     const evidence = evidenceForMatches({
       sources,
       matches: productMatches.matches,
@@ -494,7 +513,9 @@ export function buildLeadScoringContext(
   if (industryMatches.length > 0) {
     const impact = Math.min(18, industryMatches.length * 9);
     score += impact;
-    matchedSignals.push(`industry match: ${industryMatches.join(", ")}`);
+    if (strongCommercialMatches.length === 0) {
+      matchedSignals.push(`industry match: ${industryMatches.join(", ")}`);
+    }
     const evidence = evidenceForMatches({
       sources,
       matches: industryMatches,
@@ -510,7 +531,9 @@ export function buildLeadScoringContext(
   if (roleMatches.length > 0) {
     const impact = Math.min(18, roleMatches.length * 10);
     score += impact;
-    matchedSignals.push(`role match: ${roleMatches.join(", ")}`);
+    if (strongCommercialMatches.length === 0) {
+      matchedSignals.push(`role match: ${roleMatches.join(", ")}`);
+    }
     const evidence = evidenceForMatches({
       sources,
       matches: roleMatches,
@@ -561,7 +584,6 @@ export function buildLeadScoringContext(
 
   if (poorFitMatches > 0 && relevantMatches === 0 && targetMatches.score === 0) {
     score -= 25;
-    matchedSignals.push("weak-fit role signal");
     const evidence = evidenceForMatches({
       sources,
       matches: POOR_FIT_TERMS.filter((term) => containsTerm(text, term)),
@@ -578,7 +600,6 @@ export function buildLeadScoringContext(
 
   if (excludedMatches.score > 0 && targetMatches.score === 0 && roleMatches.length === 0) {
     score -= Math.min(30, excludedMatches.score);
-    matchedSignals.push(`excluded role signal: ${excludedMatches.matches.join(", ")}`);
     const evidence = evidenceForMatches({
       sources,
       matches: excludedMatches.matches,
@@ -595,7 +616,6 @@ export function buildLeadScoringContext(
 
   if (nonIcpContext) {
     score -= 18;
-    matchedSignals.push("non-ICP public, nonprofit, education, investor, or government context");
     const evidence = evidenceForMatches({
       sources,
       matches: NON_ICP_CONTEXT_TERMS.filter((term) => containsTerm(text, term)),
@@ -638,6 +658,8 @@ export function buildLeadScoringContext(
     buyerRelevance: relevantMatches > 0 || strongCommercialMatches.length > 0,
     sellerContextConnection: productMatches.score > 0 || strongCommercialMatches.length > 0,
     strongCommercialContext: strongCommercialMatches.length >= 2,
+    hasProfileDepth,
+    limitedProfileContext,
     reliableCompany,
     nonIcpContext
   };
@@ -658,6 +680,9 @@ export function buildLeadScoringContext(
   }
   if (decisionSignals.strongCommercialContext && !nonIcpContext) {
     finalHeuristicScore = Math.max(finalHeuristicScore, 72);
+  }
+  if (limitedProfileContext) {
+    finalHeuristicScore = Math.min(finalHeuristicScore, 82);
   }
 
   const heuristicConfidence: ProfileAnalysis["confidence"] = companySizeEvidence && independentSignalCount >= 4
@@ -716,7 +741,9 @@ export function normalizeProfileAnalysisScore(
       confidence: "low",
       scoreEvidence: lowConfidenceEvidence,
       scoringMetadata: buildScoringMetadata(lowConfidenceEvidence, 0, "Not enough data", "low"),
-      positiveSignals: (analysis.positiveSignals ?? []).length ? analysis.positiveSignals : context.matchedSignals,
+      positiveSignals: buildPositiveSignals(context, analysis.positiveSignals ?? []),
+      negativeSignals: buildNegativeSignals(context, analysis.negativeSignals ?? []),
+      riskWarnings: buildNegativeSignals(context, analysis.riskWarnings ?? []),
       missingInformation: (analysis.missingInformation ?? []).length
         ? analysis.missingInformation
         : ["More visible profile context is needed for confident scoring."],
@@ -737,6 +764,14 @@ export function normalizeProfileAnalysisScore(
     context.decisionSignals.buyerRelevance &&
     (context.decisionSignals.industryMatch || context.decisionSignals.operationalPainEvidence) &&
     !context.decisionSignals.nonIcpContext;
+  const finalConfidence = adjustedConfidence(analysis.confidence, context.decisionSignals, independentSignalCount);
+  const ninetyPlusEligible = context.decisionSignals.roleMatch &&
+    context.decisionSignals.industryMatch &&
+    context.decisionSignals.buyerRelevance &&
+    context.decisionSignals.operationalPainEvidence &&
+    context.decisionSignals.reliableCompany &&
+    context.decisionSignals.hasProfileDepth &&
+    (finalConfidence === "high" || (finalConfidence === "medium" && independentSignalCount >= 7));
   let finalScore = Math.max(0, Math.min(100, blendedScore));
 
   if (lacksCoreSupport && !context.decisionSignals.strongCommercialContext) {
@@ -748,11 +783,23 @@ export function normalizeProfileAnalysisScore(
   if (context.decisionSignals.nonIcpContext) {
     finalScore = Math.min(finalScore, 39);
   }
-  if (context.decisionSignals.strongCommercialContext && !context.decisionSignals.nonIcpContext) {
-    finalScore = Math.max(finalScore, 60);
+  if (!ninetyPlusEligible) {
+    finalScore = Math.min(finalScore, 89);
+  }
+  if (context.decisionSignals.limitedProfileContext) {
+    finalScore = Math.min(finalScore, 82);
+  }
+  if (finalConfidence === "low") {
+    finalScore = Math.min(finalScore, 54);
+  }
+  if (
+    context.decisionSignals.strongCommercialContext &&
+    !context.decisionSignals.nonIcpContext &&
+    finalConfidence !== "low"
+  ) {
+    finalScore = Math.max(finalScore, 65);
   }
 
-  const finalConfidence = adjustedConfidence(analysis.confidence, context.decisionSignals, independentSignalCount);
   const finalFitLabel = fitLabelForScore(finalScore, finalConfidence);
   const scoreEvidence = dedupeEvidence([
     ...context.scoreEvidence,
@@ -767,7 +814,9 @@ export function normalizeProfileAnalysisScore(
     confidence: finalConfidence,
     scoreEvidence,
     scoringMetadata: buildScoringMetadata(scoreEvidence, finalScore, finalFitLabel, finalConfidence),
-    positiveSignals: dedupeStrings([...context.matchedSignals, ...(analysis.positiveSignals ?? [])]).slice(0, 8),
+    positiveSignals: buildPositiveSignals(context, analysis.positiveSignals ?? []),
+    negativeSignals: buildNegativeSignals(context, analysis.negativeSignals ?? []),
+    riskWarnings: buildNegativeSignals(context, analysis.riskWarnings ?? []),
     recommendedAction,
     actionReason: buildActionReason(recommendedAction, context.decisionSignals),
     recommendedNextAction: recommendedNextStep(recommendedAction)
@@ -782,7 +831,8 @@ function countDecisionSignals(signals: LeadDecisionSignals): number {
     signals.operationalPainEvidence,
     signals.buyerRelevance,
     signals.sellerContextConnection,
-    signals.strongCommercialContext
+    signals.strongCommercialContext,
+    signals.reliableCompany
   ].filter(Boolean).length;
 }
 
@@ -791,6 +841,10 @@ function adjustedConfidence(
   signals: LeadDecisionSignals,
   independentSignalCount: number
 ): ProfileAnalysis["confidence"] {
+  if (modelConfidence === "low") {
+    return "low";
+  }
+
   if (independentSignalCount <= 1 || (!signals.reliableCompany && !signals.industryMatch && !signals.strongCommercialContext)) {
     return "low";
   }
@@ -838,6 +892,10 @@ function buildActionReason(action: ProfileAnalysis["recommendedAction"], signals
     !signals.buyerRelevance ? "buyer relevance" : undefined,
     !signals.sellerContextConnection ? "a clear connection to the offer" : undefined
   ].filter((item): item is string => Boolean(item));
+
+  if (signals.strongCommercialContext && signals.limitedProfileContext) {
+    return "HubSpot / CRM / RevOps consultant context is strong, but profile context is limited, so review before outreach.";
+  }
 
   if (action === "Pursue now") {
     if (signals.strongCommercialContext) {
@@ -903,6 +961,30 @@ function dedupeStrings(items: string[]): string[] {
     seen.add(key);
     return true;
   });
+}
+
+function buildPositiveSignals(context: LeadScoringContext, modelSignals: string[]): string[] {
+  const merged = [...context.matchedSignals, ...modelSignals].filter(
+    (signal) => !/\b(non-?icp|public figure|nonprofit|non-profit|government|investor|disqualifier|excluded role|weak-fit)\b/i.test(signal)
+  );
+  const filtered = context.decisionSignals.strongCommercialContext
+    ? merged.filter(
+        (signal) =>
+          signal === "Strong HubSpot / CRM / RevOps consultant context" ||
+          !/\b(hubspot|crm|revops)\b.*\b(consultant|partner|match)|\b(consultant|partner|match)\b.*\b(hubspot|crm|revops)\b/i.test(
+            signal
+          )
+      )
+    : merged;
+
+  return dedupeStrings(filtered).slice(0, 8);
+}
+
+function buildNegativeSignals(context: LeadScoringContext, modelSignals: string[]): string[] {
+  const deterministicRisks = context.scoreEvidence
+    .filter((item) => item.signalType === "disqualifier" || item.signalType === "negative")
+    .map((item) => item.summary);
+  return dedupeStrings([...modelSignals, ...deterministicRisks]).slice(0, 8);
 }
 
 function findSourceForTerm(sources: EvidenceSource[], term: string): EvidenceSource | undefined {
