@@ -158,4 +158,41 @@ describe("normalizeAnalysisResult", () => {
     expect(normalized.scoreEvidence).toEqual([]);
     expect(normalized.scoringMetadata.analysisDepth).toBe("limited");
   });
+
+  it("normalizes v0.5 decision enum aliases for render safety", () => {
+    const normalized = normalizeAnalysisResult({
+      leadScore: 51,
+      persona: "HubSpot consultant",
+      painPoints: ["CRM workflow quality"],
+      icebreaker: "Noticed your HubSpot work.",
+      confidence: "medium",
+      decisionBreakdown: {
+        roleFit: {
+          status: "partial",
+          score: 44,
+          explanation: "Some role evidence.",
+          evidence: ["HubSpot CRM"],
+          source: "headline",
+          basis: "fact"
+        }
+      },
+      outreachReadiness: {
+        readiness: "low",
+        timingRecommendation: "Wait until more information is gathered.",
+        blockers: ["No direct pain evidence", "Company size missing", "Buying intent missing"],
+        prerequisites: ["Review About", "Confirm CRM workflow", "Review company size"]
+      },
+      outreachCoach: {
+        verdict: "Proceed with caution.",
+        humanReviewRequired: false
+      }
+    });
+
+    expect(normalized.decisionBreakdown.roleFit.status).toBe("moderate");
+    expect(normalized.outreachReadiness.readiness).toBe("not_ready");
+    expect(normalized.outreachReadiness.timingRecommendation).toBe("Research first");
+    expect(normalized.outreachReadiness.blockers).toHaveLength(2);
+    expect(normalized.outreachCoach.verdict).toBe("Research before sending");
+    expect(normalized.outreachCoach.humanReviewRequired).toBe(true);
+  });
 });

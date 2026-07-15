@@ -730,10 +730,11 @@ export function normalizeProfileAnalysisScore(
   const independentSignalCount = countDecisionSignals(context.decisionSignals);
 
   if (analysis.confidence === "low" && independentSignalCount === 0) {
-    const lowConfidenceEvidence = dedupeEvidence([
+    const fullLowConfidenceEvidence = dedupeEvidence([
       ...context.scoreEvidence,
       ...(analysis.scoreEvidence ?? []).filter((item) => item.basis === "inference")
     ]).slice(0, 20);
+    const lowConfidenceEvidence = limitScoreEvidence(fullLowConfidenceEvidence);
     return {
       ...analysis,
       leadScore: 0,
@@ -742,7 +743,7 @@ export function normalizeProfileAnalysisScore(
       ...buildDecisionIntelligence({
         context,
         profile,
-        scoreEvidence: lowConfidenceEvidence,
+        scoreEvidence: fullLowConfidenceEvidence,
         finalScore: 0,
         finalConfidence: "low",
         recommendedAction: "Research more"
@@ -753,7 +754,7 @@ export function normalizeProfileAnalysisScore(
       negativeSignals: buildNegativeSignals(context, analysis.negativeSignals ?? []),
       riskWarnings: buildNegativeSignals(context, analysis.riskWarnings ?? []),
       missingInformation: (analysis.missingInformation ?? []).length
-        ? analysis.missingInformation
+        ? analysis.missingInformation.slice(0, 4)
         : ["More visible profile context is needed for confident scoring."],
       recommendedAction: "Research more",
       actionReason: buildActionReason("Research more", context.decisionSignals),
@@ -810,15 +811,16 @@ export function normalizeProfileAnalysisScore(
   }
 
   const finalFitLabel = fitLabelForScore(finalScore, finalConfidence);
-  const scoreEvidence = dedupeEvidence([
+  const fullScoreEvidence = dedupeEvidence([
     ...context.scoreEvidence,
     ...(analysis.scoreEvidence ?? []).filter((item) => item.basis === "inference")
   ]).slice(0, 20);
+  const scoreEvidence = limitScoreEvidence(fullScoreEvidence);
   const recommendedAction = recommendedActionForDecision(finalScore, finalConfidence, context.decisionSignals, independentSignalCount);
   const decisionIntelligence = buildDecisionIntelligence({
     context,
     profile,
-    scoreEvidence,
+    scoreEvidence: fullScoreEvidence,
     finalScore,
     finalConfidence,
     recommendedAction
@@ -835,6 +837,7 @@ export function normalizeProfileAnalysisScore(
     positiveSignals: buildPositiveSignals(context, analysis.positiveSignals ?? []),
     negativeSignals: buildNegativeSignals(context, analysis.negativeSignals ?? []),
     riskWarnings: buildNegativeSignals(context, analysis.riskWarnings ?? []),
+    missingInformation: (analysis.missingInformation ?? []).slice(0, 4),
     recommendedAction,
     actionReason: buildActionReason(recommendedAction, context.decisionSignals),
     recommendedNextAction: recommendedNextStep(recommendedAction)
@@ -1004,6 +1007,12 @@ function buildDecisionBreakdown(
   const companyEvidence = evidenceForCategory(evidence, "company", "company_size");
   const painEvidence = evidenceForCategory(evidence, "pain_point", "technology", "experience");
   const riskEvidence = evidence.filter((item) => item.signalType === "negative" || item.signalType === "disqualifier");
+  const roleSupportCategories: ScoreEvidence["category"][] = signals.strongCommercialContext
+    ? ["role", "technology", "industry", "experience"]
+    : ["role"];
+  const roleSupportEvidence = roleEvidence.length
+    ? roleEvidence
+    : evidenceForCategory(evidence, ...roleSupportCategories);
 
   return {
     roleFit: breakdownItem({
@@ -1014,9 +1023,9 @@ function buildDecisionBreakdown(
           ? "Visible role context strongly matches HubSpot, CRM, or RevOps consulting relevance."
           : "A relevant role or seniority signal is visible, but it needs supporting evidence."
         : "Target role or seniority is not clearly visible.",
-      evidence: roleEvidence,
-      source: sourceForEvidence(evidence, "role"),
-      basis: basisForEvidence(evidence, "role")
+      evidence: roleSupportEvidence,
+      source: sourceForEvidence(evidence, ...roleSupportCategories),
+      basis: basisForEvidence(evidence, ...roleSupportCategories)
     }),
     industryFit: breakdownItem({
       status: signals.industryMatch || signals.strongCommercialContext ? "strong" : "missing",
@@ -1102,10 +1111,28 @@ function buildDecisionBreakdown(
 }
 
 function breakdownItem(item: BreakdownItem): BreakdownItem {
+  const evidence = dedupeStrings(item.evidence).slice(0, 2);
+  const source = item.source || "not_available";
+  const basis = item.basis || "missing";
+  const hasUsableSupport = basis !== "missing" && source !== "not_available" && (evidence.length > 0 || source === "computed");
+  if (item.status === "strong" && !hasUsableSupport) {
+    return {
+      ...item,
+      status: "missing",
+      score: Math.min(item.score, 20),
+      source,
+      basis: "missing",
+      explanation: "This factor cannot be rated strong because supporting visible evidence is missing.",
+      evidence: []
+    };
+  }
+
   return {
     ...item,
+    source,
+    basis,
     explanation: truncateNatural(item.explanation, 500),
-    evidence: dedupeStrings(item.evidence).slice(0, 5)
+    evidence
   };
 }
 
@@ -1184,7 +1211,7 @@ function buildActionRisks(signals: LeadDecisionSignals, limitedContextReasons: s
     ...limitedContextReasons.filter((reason) => /buying intent|company size/i.test(reason))
   ];
 
-  return dedupeStrings(risks.filter(Boolean)).slice(0, 3);
+  return dedupeStrings(risks.filter(Boolean)).slice(0, 2);
 }
 
 function buildActionPrerequisites(signals: LeadDecisionSignals, action: ProfileAnalysis["recommendedAction"]): string[] {
@@ -1196,7 +1223,7 @@ function buildActionPrerequisites(signals: LeadDecisionSignals, action: ProfileA
     !signals.buyerRelevance ? "Confirm the person influences CRM, RevOps, sales, or prospecting workflow decisions." : "",
     !signals.operationalPainEvidence ? "Confirm a current CRM, HubSpot, RevOps, outbound, or lead workflow pain." : "",
     !signals.companySizeEvidence ? "Review company size or operating context." : ""
-  ].filter(Boolean)).slice(0, 3);
+  ].filter(Boolean)).slice(0, 2);
 }
 
 function buildActionExpiration(signals: LeadDecisionSignals, action: ProfileAnalysis["recommendedAction"]): string {
@@ -1260,7 +1287,7 @@ function buildDecisionChangeConditions(signals: LeadDecisionSignals): ProfileAna
   ];
   const conditions = rawConditions.filter((item): item is ProfileAnalysis["decisionChangeConditions"][number] => Boolean(item));
 
-  return conditions.slice(0, 5);
+  return conditions.slice(0, 3);
 }
 
 function buildNextBestResearchActions(
@@ -1311,7 +1338,7 @@ function buildNextBestResearchActions(
   ];
   const actions = rawActions.filter((item): item is ProfileAnalysis["nextBestResearchActions"][number] => Boolean(item));
 
-  return dedupeByAction(actions).slice(0, 3);
+  return dedupeByAction(actions).slice(0, 2);
 }
 
 function buildOutreachReadiness(
@@ -1327,7 +1354,7 @@ function buildOutreachReadiness(
     signals.nonIcpContext ? "Potential non-ICP profile" : "",
     dataSufficiency === "insufficient" ? "Visible profile data is insufficient" : "",
     "Existing relationship context is missing"
-  ].filter(Boolean)).slice(0, 6);
+  ].filter(Boolean)).slice(0, 2);
   const prerequisites = buildActionPrerequisites(signals, action);
 
   if (signals.nonIcpContext || action === "Do not contact yet") {
@@ -1415,7 +1442,7 @@ function evidenceForCategory(evidence: ScoreEvidence[], ...categories: ScoreEvid
 }
 
 function evidenceSummaries(evidence: ScoreEvidence[]): string[] {
-  return dedupeStrings(evidence.map((item) => item.evidenceText || item.summary).filter(Boolean)).slice(0, 5);
+  return dedupeStrings(evidence.map((item) => item.evidenceText || item.summary).filter(Boolean)).slice(0, 2);
 }
 
 function sourceForEvidence(evidence: ScoreEvidence[], ...categories: ScoreEvidence["category"][]): string {
@@ -1505,14 +1532,14 @@ function buildPositiveSignals(context: LeadScoringContext, modelSignals: string[
       )
     : merged;
 
-  return dedupeStrings(filtered).slice(0, 8);
+  return dedupeStrings(filtered).slice(0, 5);
 }
 
 function buildNegativeSignals(context: LeadScoringContext, modelSignals: string[]): string[] {
   const deterministicRisks = context.scoreEvidence
     .filter((item) => item.signalType === "disqualifier" || item.signalType === "negative")
     .map((item) => item.summary);
-  return dedupeStrings([...modelSignals, ...deterministicRisks]).slice(0, 8);
+  return dedupeStrings([...modelSignals, ...deterministicRisks]).slice(0, 3);
 }
 
 function findSourceForTerm(sources: EvidenceSource[], term: string): EvidenceSource | undefined {
@@ -1591,6 +1618,26 @@ function dedupeEvidence(items: ScoreEvidence[]): ScoreEvidence[] {
   }
 
   return result;
+}
+
+function limitScoreEvidence(items: ScoreEvidence[]): ScoreEvidence[] {
+  const selected: ScoreEvidence[] = [];
+  const add = (bucket: ScoreEvidence[], maxItems: number) => {
+    for (const item of bucket) {
+      if (selected.length >= 5 || selected.filter((entry) => bucket.includes(entry)).length >= maxItems) {
+        break;
+      }
+      selected.push(item);
+    }
+  };
+
+  add(items.filter((item) => item.signalType === "positive" && item.basis === "fact" && item.category === "role"), 1);
+  add(items.filter((item) => item.signalType === "positive" && item.basis === "fact" && item.category !== "role"), 2);
+  add(items.filter((item) => item.basis === "inference"), 1);
+  add(items.filter((item) => item.signalType === "negative" || item.signalType === "disqualifier"), 1);
+  add(items.filter((item) => item.signalType === "missing"), 1);
+
+  return dedupeEvidence([...selected, ...items]).slice(0, 5);
 }
 
 function normalizeEvidenceKey(value: string): string {

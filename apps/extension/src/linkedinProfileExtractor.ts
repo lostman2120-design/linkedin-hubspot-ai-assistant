@@ -61,8 +61,16 @@ type DebugWindow = Window & {
 
 type SectionLabel = "About" | "Experience" | "Education" | "Skills" | "Activity";
 
+const SECTION_LABEL_ALIASES: Record<SectionLabel, string[]> = {
+  About: ["About", "About me", "Summary", "自己紹介", "概要", "À propos", "A propos", "Sobre", "Acerca de", "Info", "소개"],
+  Experience: ["Experience", "職歴", "経歴", "経験", "Expérience", "Experiencia", "Experiência"],
+  Education: ["Education", "学歴", "Formation", "Educación", "Educação"],
+  Skills: ["Skills", "スキル", "Compétences", "Aptitudes", "Competências"],
+  Activity: ["Activity", "アクティビティ", "Activité", "Actividad", "Atividade"]
+};
+
 const boilerplateLinePattern =
-  /^(show more|show less|see more|see less|connect|message|follow|following|more|save|send profile in a message|contact info|open to|view .* profile|activate to view larger image|image|premium|try premium|join now|sign in)$/i;
+  /^(show more|show less|see more|see less|さらに表示|表示を減らす|もっと見る|閉じる|connect|message|follow|following|more|save|send profile in a message|contact info|open to|view .* profile|activate to view larger image|image|premium|try premium|join now|sign in)$/i;
 
 const invalidNameLabels = new Set([
   "about",
@@ -793,20 +801,14 @@ function extractAbout(): string | undefined {
   const possibleSections = [
     aboutAnchor?.closest("section"),
     ...safeQuerySelectorAll("section:has(#about)"),
-    ...visibleSections().filter((section) => /^About\b/i.test(normalizeText(section.innerText).slice(0, 120)))
+    ...visibleSections().filter((section) => sectionStartsWithLabel(section, "About"))
   ].filter(Boolean) as HTMLElement[];
 
   for (const section of possibleSections) {
-    const text = normalizeText(dedupeProfileText(visibleTextForElement(section)))
-      .replace(/^About\s*/i, "")
-      .replace(/\bsee more\b/gi, "")
-      .replace(/\bshow more\b/gi, "")
-      .replace(/\bshow less\b/gi, "")
-      .replace(/\s+/g, " ")
-      .trim();
+    const text = cleanedSectionText(section, "About", ABOUT_LIMIT);
 
     if (text && text.length > 10) {
-      return text.slice(0, ABOUT_LIMIT);
+      return text;
     }
   }
 
@@ -819,7 +821,7 @@ function extractSectionText(label: SectionLabel, limit: number): string | undefi
     return undefined;
   }
 
-  const cleanedLines = cleanContextLines(visibleLines(section)).filter((line) => line.toLowerCase() !== label.toLowerCase());
+  const cleanedLines = cleanContextLines(visibleLines(section)).filter((line) => !lineMatchesSectionLabel(line, label));
   const text = dedupeProfileText(cleanedLines.join("\n")).slice(0, limit).trim();
   return text || undefined;
 }
@@ -840,10 +842,28 @@ function findVisibleSectionByLabel(label: SectionLabel): HTMLElement | undefined
     return anchorSection;
   }
 
-  return visibleSections().find((section) => {
-    const lines = visibleLines(section).slice(0, 8).map((line) => line.toLowerCase());
-    return lines.some((line) => line === label.toLowerCase() || line.startsWith(`${label.toLowerCase()} `));
-  });
+  return visibleSections().find((section) => sectionStartsWithLabel(section, label));
+}
+
+function cleanedSectionText(section: HTMLElement, label: SectionLabel, limit: number): string | undefined {
+  const cleanedLines = cleanContextLines(visibleLines(section)).filter((line) => !lineMatchesSectionLabel(line, label));
+  const text = dedupeProfileText(cleanedLines.join("\n")).slice(0, limit).trim();
+  return text || undefined;
+}
+
+function sectionStartsWithLabel(section: HTMLElement, label: SectionLabel): boolean {
+  const aliases = SECTION_LABEL_ALIASES[label].map(normalizeSectionLabel);
+  const lines = visibleLines(section).slice(0, 8).map(normalizeSectionLabel);
+  return lines.some((line) => aliases.some((alias) => line === alias || line.startsWith(`${alias} `)));
+}
+
+function lineMatchesSectionLabel(line: string, label: SectionLabel): boolean {
+  const normalizedLine = normalizeSectionLabel(line);
+  return SECTION_LABEL_ALIASES[label].map(normalizeSectionLabel).some((alias) => normalizedLine === alias);
+}
+
+function normalizeSectionLabel(value: string): string {
+  return normalizeText(value).replace(/[:：]+$/g, "").toLowerCase();
 }
 
 function cleanContextLines(lines: string[]): string[] {
@@ -852,7 +872,7 @@ function cleanContextLines(lines: string[]): string[] {
 
 function cleanContextLine(value: string | undefined): string | undefined {
   const cleaned = cleanSingleLineField(value)
-    ?.replace(/\b(show more|show less|see more|see less)\b/gi, "")
+    ?.replace(/\b(show more|show less|see more|see less)\b|さらに表示|表示を減らす|もっと見る/gi, "")
     .replace(/\b\d+(?:st|nd|rd|th)\b/g, "")
     .trim();
 

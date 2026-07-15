@@ -248,6 +248,9 @@ describe("Sidebar ICP summary panel", () => {
     expect(text).toContain("What would change this decision?");
     expect(text).toContain("Next Best Research Action");
     expect(text).toContain("AI Outreach Coach");
+    expect(text).toContain("Pain hypotheses");
+    expect(text).toContain("These are not confirmed pains.");
+    expect(text).toContain("Use Connection Message, First DM, or Follow-up when you want the AI to draft outreach.");
     expect(text.indexOf("Recommended Action")).toBeLessThan(text.indexOf("Outreach Readiness"));
     expect(text.indexOf("AI Outreach Coach")).toBeLessThan(text.indexOf("DM Drafts"));
   });

@@ -147,6 +147,99 @@ describe("OpenAI analysis response normalization", () => {
     }
   });
 
+  it("normalizes production v0.5 enum aliases that previously caused a retry", () => {
+    const schema = createEnglishOnlyProfileAnalysisSchema();
+    const response = {
+      ...buildAnalysisResponseWithValidVariantLists(),
+      dataSufficiency: "partial",
+      decisionBreakdown: {
+        dataSufficiency: {
+          status: "partial",
+          score: 44,
+          explanation: "Some evidence is present.",
+          evidence: ["Visible headline"],
+          source: "headline",
+          basis: "fact"
+        }
+      },
+      outreachReadiness: {
+        readiness: "low",
+        readinessScore: 35,
+        timingRecommendation: "Wait until more information is gathered.",
+        reason: "More context is needed.",
+        blockers: ["No direct pain evidence", "Company size missing", "Buying intent missing"],
+        prerequisites: ["Review About", "Confirm CRM ownership", "Review company size"]
+      },
+      outreachCoach: {
+        verdict: "Proceed with caution.",
+        message: "Review first.",
+        mainWarning: "Do not assume pain.",
+        recommendedPreparation: "Gather more context.",
+        humanReviewRequired: false
+      }
+    };
+
+    const normalized = normalizeAnalysisResponseForSchema(response) as Record<string, unknown>;
+    const parsed = schema.parse(normalized);
+
+    expect(parsed.decisionBreakdown.dataSufficiency.status).toBe("moderate");
+    expect(parsed.outreachReadiness.readiness).toBe("not_ready");
+    expect(parsed.outreachReadiness.timingRecommendation).toBe("Research first");
+    expect(parsed.outreachReadiness.blockers).toHaveLength(2);
+    expect(parsed.outreachReadiness.prerequisites).toHaveLength(2);
+    expect(parsed.outreachCoach.verdict).toBe("Research before sending");
+    expect(parsed.outreachCoach.humanReviewRequired).toBe(true);
+  });
+
+  it.each([
+    ["partial", "moderate"],
+    ["insufficient", "missing"]
+  ])("normalizes dataSufficiency.status %s to %s", (status, expected) => {
+    const normalized = normalizeAnalysisResponseForSchema({
+      dataSufficiency: status,
+      decisionBreakdown: {
+        dataSufficiency: {
+          status,
+          score: 20,
+          explanation: "Evidence coverage.",
+          evidence: [],
+          source: "computed",
+          basis: "fact"
+        }
+      }
+    }) as { decisionBreakdown: { dataSufficiency: { status: string } } };
+
+    expect(normalized.decisionBreakdown.dataSufficiency.status).toBe(expected);
+  });
+
+  it.each([
+    ["low", "not_ready"],
+    ["medium", "almost_ready"]
+  ])("normalizes outreach readiness %s to %s", (readiness, expected) => {
+    const normalized = normalizeAnalysisResponseForSchema({
+      outreachReadiness: {
+        readiness,
+        timingRecommendation: "research first"
+      }
+    }) as { outreachReadiness: { readiness: string } };
+
+    expect(normalized.outreachReadiness.readiness).toBe(expected);
+  });
+
+  it("falls back unknown outreach coach verdict from readiness", () => {
+    const normalized = normalizeAnalysisResponseForSchema({
+      outreachReadiness: {
+        readiness: "avoid",
+        timingRecommendation: "Do not contact yet"
+      },
+      outreachCoach: {
+        verdict: "Maybe later"
+      }
+    }) as { outreachCoach: { verdict: string } };
+
+    expect(normalized.outreachCoach.verdict).toBe("Do not send yet");
+  });
+
   it("does not trigger the retry request for the known boolean-versus-array response shape", async () => {
     vi.stubEnv("OPENAI_API_KEY", "sk-test-key");
     const fetchMock = vi.fn().mockResolvedValue({
@@ -324,6 +417,70 @@ describe("OpenAI analysis response normalization", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(analysis.outreachCoach.humanReviewRequired).toBe(true);
   });
+
+  it("does not trigger the retry request for the production v0.5 enum alias response shape", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test-key");
+    const responseWithAliases = {
+      ...buildAnalysisResponseWithoutDmVariants(),
+      dataSufficiency: "partial",
+      decisionBreakdown: {
+        dataSufficiency: {
+          status: "partial",
+          score: 44,
+          explanation: "Some evidence is present.",
+          evidence: ["Visible headline"],
+          source: "headline",
+          basis: "fact"
+        }
+      },
+      outreachReadiness: {
+        readiness: "low",
+        readinessScore: 35,
+        timingRecommendation: "Wait until more information is gathered.",
+        reason: "More context is needed.",
+        blockers: ["No direct pain evidence"],
+        prerequisites: ["Review visible About section"]
+      },
+      outreachCoach: {
+        verdict: "Proceed with caution.",
+        message: "Review first.",
+        mainWarning: "Do not assume pain.",
+        recommendedPreparation: "Gather more context.",
+        humanReviewRequired: false
+      }
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify(responseWithAliases)
+              }
+            }
+          ]
+        })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const analysis = await new OpenAiService().analyzeProfile(
+      {
+        fullName: "Avery Johnson",
+        firstName: "Avery",
+        lastName: "Johnson",
+        headline: "VP Sales at Example Corp",
+        companyName: "Example Corp",
+        profileUrl: "https://www.linkedin.com/in/avery-johnson/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(analysis.dmVariants).toEqual([]);
+  });
 });
 
 function buildAnalysisResponseWithBooleanVariantLists() {
@@ -392,4 +549,10 @@ function buildAnalysisResponseWithValidVariantLists() {
       offerContextUsed: ["LinkedIn to HubSpot workflow"]
     }))
   };
+}
+
+function buildAnalysisResponseWithoutDmVariants() {
+  const response: Record<string, unknown> = { ...buildAnalysisResponseWithValidVariantLists() };
+  delete response.dmVariants;
+  return response;
 }

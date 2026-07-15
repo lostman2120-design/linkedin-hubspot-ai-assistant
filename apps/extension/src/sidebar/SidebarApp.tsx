@@ -376,6 +376,10 @@ export function SidebarApp() {
   const dmVariants = renderedAnalysis?.dmVariants ?? [];
   const scoreEvidence = renderedAnalysis?.scoreEvidence ?? [];
   const visibleScoreEvidence = showAllScoreEvidence ? scoreEvidence : scoreEvidence.slice(0, 6);
+  const hasConfirmedPainEvidence = scoreEvidence.some(
+    (item) => item.signalType === "positive" && item.basis === "fact" && item.category === "pain_point"
+  );
+  const painSectionLabel = hasConfirmedPainEvidence ? "Confirmed Pain Points" : "Pain hypotheses";
   const generatedDmWarnings = Array.isArray(visibleGeneratedDm?.warnings) ? visibleGeneratedDm.warnings : [];
   const extractionWarnings = Array.isArray(profile?.extractionWarnings) ? profile.extractionWarnings : [];
   const icpSummaryFields = useMemo(() => buildIcpSummaryFields(settings), [settings]);
@@ -694,7 +698,7 @@ export function SidebarApp() {
       setAnalysis(normalizedResult);
       setStatus("analysis_complete");
       setNextAction(normalizedResult.recommendedNextAction || normalizedResult.recommendedAction);
-      setMessage(normalizedResult.dmVariants.length ? "Profile analysis is ready." : "Profile analysis is ready. DM variants could not be generated. Please try again.");
+      setMessage("Profile analysis is ready. Generate a message only when you need a draft.");
 
       if (!isBetaProLicenseActive(licenseState)) {
         setDailyUsage(await incrementDailyUsage("profileAnalyses"));
@@ -1321,7 +1325,7 @@ export function SidebarApp() {
         </section>
 
         <section className="lhai-section lhai-card">
-          <span className="lhai-label">Pain Points</span>
+          <span className="lhai-label">{painSectionLabel}</span>
           {painPoints.length ? (
             <ul className="lhai-list">
               {painPoints.map((point) => (
@@ -1329,8 +1333,11 @@ export function SidebarApp() {
               ))}
             </ul>
           ) : (
-            <p className="lhai-value lhai-muted">Likely pain points will appear here after analysis.</p>
+            <p className="lhai-value lhai-muted">Cautious pain hypotheses will appear here after analysis.</p>
           )}
+          {renderedAnalysis && !hasConfirmedPainEvidence ? (
+            <p className="lhai-value lhai-muted">These are not confirmed pains. Review the visible evidence before using them in outreach.</p>
+          ) : null}
         </section>
 
         <section className="lhai-section lhai-card">
@@ -1401,7 +1408,11 @@ export function SidebarApp() {
             </div>
           ) : (
             <div className="lhai-dm lhai-empty-state">
-              <p className="lhai-value">{renderedAnalysis ? "DM variants could not be generated. Please try Analyze Profile again." : "Analyze this profile to generate three DM variants."}</p>
+              <p className="lhai-value">
+                {renderedAnalysis
+                  ? "Use Connection Message, First DM, or Follow-up when you want the AI to draft outreach."
+                  : "Analyze this profile first, then generate a message only when needed."}
+              </p>
             </div>
           )}
         </section>

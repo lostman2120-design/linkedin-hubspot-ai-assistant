@@ -157,6 +157,50 @@ describe("LinkedIn profile extraction", () => {
     expect(profile.contextConfidence).toBe("high");
   });
 
+  it("extracts visible About text from a Japanese LinkedIn UI section", () => {
+    document.body.innerHTML = `
+      <main>
+        <section data-view-name="profile-top-card">
+          <h1>Joris Milloux</h1>
+          <div class="text-body-medium break-words">Consultant HubSpot CRM (Diamond Partner) | RevOps & AI</div>
+          <a href="/company/example-consulting/"><span aria-hidden="true">Example Consulting</span></a>
+        </section>
+        <section>
+          <h2>自己紹介</h2>
+          <div>HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.</div>
+          <button>さらに表示</button>
+        </section>
+      </main>
+    `;
+
+    const profile = extractLinkedInProfile();
+
+    expect(profile.about).toContain("HubSpot CRM consultant");
+    expect(profile.visibleProfileContext?.rawVisibleContext).toContain("About:");
+    expect(profile.extractionWarnings ?? []).not.toContain("Limited profile context detected. AI score may be less accurate.");
+  });
+
+  it("extracts visible About text from a current English LinkedIn section without an about anchor", () => {
+    document.body.innerHTML = `
+      <main>
+        <section data-view-name="profile-top-card">
+          <h1>Avery Johnson</h1>
+          <div class="text-body-medium break-words">RevOps Lead at Example Corp</div>
+        </section>
+        <section>
+          <div>
+            <h2>About</h2>
+            <span>I help teams clean up HubSpot CRM data and reduce manual sales handoffs.</span>
+          </div>
+        </section>
+      </main>
+    `;
+
+    const profile = extractLinkedInProfile();
+
+    expect(profile.about).toContain("clean up HubSpot CRM data");
+  });
+
   it("compacts long visible profile context before returning the profile payload", () => {
     const longAbout = Array.from({ length: 260 }, (_, index) => `CRM hygiene and outbound workflow detail ${index + 1}`).join(" ");
     const longExperience = Array.from({ length: 180 }, (_, index) => `HubSpot process improvement detail ${index + 1}`).join(" ");

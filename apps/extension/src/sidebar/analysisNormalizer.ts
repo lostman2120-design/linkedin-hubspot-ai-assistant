@@ -205,13 +205,21 @@ function normalizeDecisionBreakdown(value: unknown): ProfileAnalysis["decisionBr
 
 function normalizeDecisionBreakdownItem(value: unknown): ProfileAnalysis["decisionBreakdown"]["roleFit"] {
   const input = isRecord(value) ? value : {};
+  const status = normalizeDecisionBreakdownStatus(input.status);
+  const basis = normalizeEnum(input.basis, decisionBreakdownBases, "missing");
+  const source = normalizeString(input.source, "not_available", 120);
+  const evidence = normalizeStringArray(input.evidence, 2, 220);
+  const supportedStatus = status === "strong" && (basis === "missing" || source === "not_available" || (!evidence.length && source !== "computed"))
+    ? "missing"
+    : status;
+
   return {
-    status: normalizeEnum(input.status, decisionBreakdownStatuses, "missing"),
+    status: supportedStatus,
     score: normalizeLeadScore(input.score),
     explanation: normalizeString(input.explanation, "Not enough visible evidence is available yet.", 500),
-    evidence: normalizeStringArray(input.evidence, 5, 220),
-    source: normalizeString(input.source, "not_available", 120),
-    basis: normalizeEnum(input.basis, decisionBreakdownBases, "missing")
+    evidence: supportedStatus === "missing" && status === "strong" ? [] : evidence,
+    source,
+    basis: supportedStatus === "missing" && status === "strong" ? "missing" : basis
   };
 }
 
@@ -221,7 +229,7 @@ function normalizeDecisionChangeConditions(value: unknown): ProfileAnalysis["dec
   }
 
   return value
-    .slice(0, 5)
+    .slice(0, 3)
     .map((item) => {
       if (!isRecord(item)) {
         return null;
@@ -248,7 +256,7 @@ function normalizeNextBestResearchActions(value: unknown): ProfileAnalysis["next
   }
 
   return value
-    .slice(0, 3)
+    .slice(0, 2)
     .map((item) => {
       if (!isRecord(item)) {
         return null;
@@ -273,24 +281,106 @@ function normalizeNextBestResearchActions(value: unknown): ProfileAnalysis["next
 function normalizeOutreachReadiness(value: unknown): ProfileAnalysis["outreachReadiness"] {
   const input = isRecord(value) ? value : {};
   return {
-    readiness: normalizeEnum(input.readiness, readinessValues, "not_ready"),
+    readiness: normalizeReadiness(input.readiness),
     readinessScore: normalizeLeadScore(input.readinessScore),
-    timingRecommendation: normalizeEnum(input.timingRecommendation, timingRecommendations, "Research first"),
+    timingRecommendation: normalizeTimingRecommendation(input.timingRecommendation),
     reason: normalizeString(input.reason, "More visible evidence is needed before outreach.", 500),
-    blockers: normalizeStringArray(input.blockers, 6, 220),
-    prerequisites: normalizeStringArray(input.prerequisites, 6, 220)
+    blockers: normalizeStringArray(input.blockers, 2, 220),
+    prerequisites: normalizeStringArray(input.prerequisites, 2, 220)
   };
 }
 
 function normalizeOutreachCoach(value: unknown): ProfileAnalysis["outreachCoach"] {
   const input = isRecord(value) ? value : {};
   return {
-    verdict: normalizeEnum(input.verdict, outreachCoachVerdicts, "Research before sending"),
+    verdict: normalizeCoachVerdict(input.verdict),
     message: normalizeString(input.message, "Review the evidence before sending any outreach.", 600),
     mainWarning: normalizeString(input.mainWarning, "Do not send unsupported claims.", 400),
     recommendedPreparation: normalizeString(input.recommendedPreparation, "Confirm the missing buying context first.", 400),
     humanReviewRequired: true
   };
+}
+
+function normalizeAlias(value: unknown): string {
+  return typeof value === "string"
+    ? value
+        .trim()
+        .replace(/[.!?]+$/g, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .toLowerCase()
+    : "";
+}
+
+function normalizeDecisionBreakdownStatus(value: unknown): ProfileAnalysis["decisionBreakdown"]["roleFit"]["status"] {
+  const normalized = normalizeAlias(value);
+  if (["strong", "sufficient", "high", "complete"].includes(normalized)) {
+    return "strong";
+  }
+  if (["moderate", "partial", "medium", "some"].includes(normalized)) {
+    return "moderate";
+  }
+  if (["weak", "low", "limited"].includes(normalized)) {
+    return "weak";
+  }
+  if (["negative", "disqualified"].includes(normalized)) {
+    return "negative";
+  }
+  if (["missing", "insufficient", "unavailable", "unknown", "not enough data"].includes(normalized)) {
+    return "missing";
+  }
+  return normalizeEnum(value, decisionBreakdownStatuses, "missing");
+}
+
+function normalizeReadiness(value: unknown): ProfileAnalysis["outreachReadiness"]["readiness"] {
+  const normalized = normalizeAlias(value);
+  if (["ready", "high", "contact now"].includes(normalized)) {
+    return "ready";
+  }
+  if (["almost ready", "almost_ready", "medium", "partial", "proceed with caution"].includes(normalized)) {
+    return "almost_ready";
+  }
+  if (["not ready", "not_ready", "low", "research first", "insufficient"].includes(normalized)) {
+    return "not_ready";
+  }
+  if (["avoid", "skip", "do not contact", "do not send"].includes(normalized)) {
+    return "avoid";
+  }
+  return normalizeEnum(value, readinessValues, "not_ready");
+}
+
+function normalizeTimingRecommendation(value: unknown): ProfileAnalysis["outreachReadiness"]["timingRecommendation"] {
+  const normalized = normalizeAlias(value);
+  if (["contact now", "ready to contact"].includes(normalized)) {
+    return "Contact now";
+  }
+  if (["research first", "gather more information", "wait until more information is gathered"].includes(normalized)) {
+    return "Research first";
+  }
+  if (["wait", "wait for trigger", "stronger signal needed", "wait for a stronger signal"].includes(normalized)) {
+    return "Wait for a stronger signal";
+  }
+  if (["do not contact", "do not contact yet", "avoid outreach"].includes(normalized)) {
+    return "Do not contact yet";
+  }
+  return normalizeEnum(value, timingRecommendations, "Research first");
+}
+
+function normalizeCoachVerdict(value: unknown): ProfileAnalysis["outreachCoach"]["verdict"] {
+  const normalized = normalizeAlias(value);
+  if (["send after review", "proceed after review"].includes(normalized)) {
+    return "Send after review";
+  }
+  if (["research before sending", "proceed with caution", "gather more information"].includes(normalized)) {
+    return "Research before sending";
+  }
+  if (["rewrite before sending", "revise first"].includes(normalized)) {
+    return "Rewrite before sending";
+  }
+  if (["do not send", "do not send yet", "avoid outreach"].includes(normalized)) {
+    return "Do not send yet";
+  }
+  return normalizeEnum(value, outreachCoachVerdicts, "Research before sending");
 }
 
 function normalizeLeadScore(value: unknown): number {
