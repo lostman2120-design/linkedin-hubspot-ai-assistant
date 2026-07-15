@@ -357,7 +357,7 @@ function buildScoringMetadata(
   const analysisDepth = factsUsedCount + inferencesUsedCount >= 5 ? "deep" : factsUsedCount + inferencesUsedCount >= 2 ? "standard" : "limited";
 
   return {
-    scoringVersion: "0.4.0",
+    scoringVersion: "0.5.0",
     finalScore,
     fitLabel,
     confidence,
@@ -739,6 +739,14 @@ export function normalizeProfileAnalysisScore(
       leadScore: 0,
       fitLabel: "Not enough data",
       confidence: "low",
+      ...buildDecisionIntelligence({
+        context,
+        profile,
+        scoreEvidence: lowConfidenceEvidence,
+        finalScore: 0,
+        finalConfidence: "low",
+        recommendedAction: "Research more"
+      }),
       scoreEvidence: lowConfidenceEvidence,
       scoringMetadata: buildScoringMetadata(lowConfidenceEvidence, 0, "Not enough data", "low"),
       positiveSignals: buildPositiveSignals(context, analysis.positiveSignals ?? []),
@@ -786,6 +794,7 @@ export function normalizeProfileAnalysisScore(
   if (!ninetyPlusEligible) {
     finalScore = Math.min(finalScore, 89);
   }
+  finalScore = Math.min(finalScore, 95);
   if (context.decisionSignals.limitedProfileContext) {
     finalScore = Math.min(finalScore, 82);
   }
@@ -806,12 +815,21 @@ export function normalizeProfileAnalysisScore(
     ...(analysis.scoreEvidence ?? []).filter((item) => item.basis === "inference")
   ]).slice(0, 20);
   const recommendedAction = recommendedActionForDecision(finalScore, finalConfidence, context.decisionSignals, independentSignalCount);
+  const decisionIntelligence = buildDecisionIntelligence({
+    context,
+    profile,
+    scoreEvidence,
+    finalScore,
+    finalConfidence,
+    recommendedAction
+  });
 
   return {
     ...analysis,
     leadScore: finalScore,
     fitLabel: finalFitLabel,
     confidence: finalConfidence,
+    ...decisionIntelligence,
     scoreEvidence,
     scoringMetadata: buildScoringMetadata(scoreEvidence, finalScore, finalFitLabel, finalConfidence),
     positiveSignals: buildPositiveSignals(context, analysis.positiveSignals ?? []),
@@ -920,6 +938,516 @@ function buildActionReason(action: ProfileAnalysis["recommendedAction"], signals
   }
 
   return "The visible profile does not provide enough role, industry, buyer, or operational-pain evidence to justify outreach now.";
+}
+
+type DecisionIntelligenceInput = {
+  context: LeadScoringContext;
+  profile: LinkedInProfile;
+  scoreEvidence: ScoreEvidence[];
+  finalScore: number;
+  finalConfidence: ProfileAnalysis["confidence"];
+  recommendedAction: ProfileAnalysis["recommendedAction"];
+};
+
+type BreakdownItem = ProfileAnalysis["decisionBreakdown"]["roleFit"];
+
+function buildDecisionIntelligence(input: DecisionIntelligenceInput): Pick<
+  ProfileAnalysis,
+  | "decisionConfidence"
+  | "dataSufficiency"
+  | "evidenceCoverage"
+  | "confidenceReason"
+  | "limitedContextReasons"
+  | "decisionBreakdown"
+  | "decisionChangeConditions"
+  | "nextBestResearchActions"
+  | "outreachReadiness"
+  | "outreachCoach"
+  | "actionRisks"
+  | "actionPrerequisites"
+  | "actionExpiration"
+> {
+  const evidenceCoverage = calculateEvidenceCoverage(input.context.decisionSignals);
+  const limitedContextReasons = buildLimitedContextReasons(input.context.decisionSignals, input.profile);
+  const dataSufficiency = buildDataSufficiency(input.context.decisionSignals, evidenceCoverage);
+  const confidenceReason = buildConfidenceReason(input.finalConfidence, input.context.decisionSignals, evidenceCoverage, limitedContextReasons);
+  const actionRisks = buildActionRisks(input.context.decisionSignals, limitedContextReasons);
+  const actionPrerequisites = buildActionPrerequisites(input.context.decisionSignals, input.recommendedAction);
+  const outreachReadiness = buildOutreachReadiness(input.context.decisionSignals, input.finalConfidence, dataSufficiency, input.recommendedAction);
+
+  return {
+    decisionConfidence: input.finalConfidence,
+    dataSufficiency,
+    evidenceCoverage,
+    confidenceReason,
+    limitedContextReasons,
+    decisionBreakdown: buildDecisionBreakdown(input.context, input.scoreEvidence, dataSufficiency, evidenceCoverage),
+    decisionChangeConditions: buildDecisionChangeConditions(input.context.decisionSignals),
+    nextBestResearchActions: buildNextBestResearchActions(input.context.decisionSignals, input.recommendedAction),
+    outreachReadiness,
+    outreachCoach: buildOutreachCoach(outreachReadiness, input.context.decisionSignals),
+    actionRisks,
+    actionPrerequisites,
+    actionExpiration: buildActionExpiration(input.context.decisionSignals, input.recommendedAction)
+  };
+}
+
+function buildDecisionBreakdown(
+  context: LeadScoringContext,
+  evidence: ScoreEvidence[],
+  dataSufficiency: ProfileAnalysis["dataSufficiency"],
+  evidenceCoverage: number
+): ProfileAnalysis["decisionBreakdown"] {
+  const signals = context.decisionSignals;
+  const roleEvidence = evidenceForCategory(evidence, "role");
+  const industryEvidence = evidenceForCategory(evidence, "industry");
+  const companyEvidence = evidenceForCategory(evidence, "company", "company_size");
+  const painEvidence = evidenceForCategory(evidence, "pain_point", "technology", "experience");
+  const riskEvidence = evidence.filter((item) => item.signalType === "negative" || item.signalType === "disqualifier");
+
+  return {
+    roleFit: breakdownItem({
+      status: signals.roleMatch ? (signals.strongCommercialContext ? "strong" : "moderate") : "missing",
+      score: signals.roleMatch ? (signals.strongCommercialContext ? 90 : 65) : 0,
+      explanation: signals.roleMatch
+        ? signals.strongCommercialContext
+          ? "Visible role context strongly matches HubSpot, CRM, or RevOps consulting relevance."
+          : "A relevant role or seniority signal is visible, but it needs supporting evidence."
+        : "Target role or seniority is not clearly visible.",
+      evidence: roleEvidence,
+      source: sourceForEvidence(evidence, "role"),
+      basis: basisForEvidence(evidence, "role")
+    }),
+    industryFit: breakdownItem({
+      status: signals.industryMatch || signals.strongCommercialContext ? "strong" : "missing",
+      score: signals.industryMatch || signals.strongCommercialContext ? 85 : 0,
+      explanation: signals.industryMatch || signals.strongCommercialContext
+        ? "Visible profile text connects to the saved industry or HubSpot/RevOps/CRM context."
+        : "Target industry context is not clearly visible.",
+      evidence: industryEvidence,
+      source: sourceForEvidence(evidence, "industry"),
+      basis: basisForEvidence(evidence, "industry")
+    }),
+    companyFit: breakdownItem({
+      status: signals.companySizeEvidence && signals.reliableCompany ? "strong" : signals.reliableCompany ? "moderate" : "missing",
+      score: signals.companySizeEvidence && signals.reliableCompany ? 85 : signals.reliableCompany ? 55 : 0,
+      explanation: signals.companySizeEvidence && signals.reliableCompany
+        ? "Current company and company-size evidence are visible."
+        : signals.reliableCompany
+          ? "Current company is visible, but company size is not confirmed."
+          : "Company context could not be verified from visible profile information.",
+      evidence: companyEvidence,
+      source: sourceForEvidence(evidence, "company", "company_size"),
+      basis: basisForEvidence(evidence, "company", "company_size")
+    }),
+    buyerRelevance: breakdownItem({
+      status: signals.buyerRelevance && signals.sellerContextConnection ? "moderate" : signals.buyerRelevance ? "weak" : "missing",
+      score: signals.buyerRelevance && signals.sellerContextConnection ? 70 : signals.buyerRelevance ? 45 : 0,
+      explanation: signals.buyerRelevance
+        ? "The profile suggests possible influence over sales, CRM, RevOps, or growth workflows."
+        : "Buying influence for the saved offer is not visible.",
+      evidence: evidenceSummaries(evidence.filter((item) => ["role", "experience", "technology", "other"].includes(item.category))),
+      source: "profile",
+      basis: signals.buyerRelevance ? "mixed" : "missing"
+    }),
+    painEvidence: breakdownItem({
+      status: signals.operationalPainEvidence ? "strong" : signals.strongCommercialContext ? "weak" : "missing",
+      score: signals.operationalPainEvidence ? 80 : signals.strongCommercialContext ? 35 : 0,
+      explanation: signals.operationalPainEvidence
+        ? "Visible profile text shows CRM, RevOps, outbound, or sales-workflow pain context."
+        : signals.strongCommercialContext
+          ? "Commercial relevance is visible, but direct workflow pain is not confirmed."
+          : "No direct CRM, RevOps, outbound, or sales-workflow pain evidence is visible.",
+      evidence: painEvidence,
+      source: sourceForEvidence(evidence, "pain_point", "technology", "experience"),
+      basis: signals.operationalPainEvidence ? "fact" : "missing"
+    }),
+    timingSignal: breakdownItem({
+      status: "missing",
+      score: 0,
+      explanation: "No clear public trigger or timing signal is visible, so timing should not be assumed.",
+      evidence: [],
+      source: "not_available",
+      basis: "missing"
+    }),
+    relationshipSignal: breakdownItem({
+      status: "missing",
+      score: 0,
+      explanation: "No existing relationship context is visible in the provided profile data.",
+      evidence: [],
+      source: "not_available",
+      basis: "missing"
+    }),
+    dataSufficiency: breakdownItem({
+      status: dataSufficiency === "sufficient" ? "strong" : dataSufficiency === "partial" ? "moderate" : "missing",
+      score: evidenceCoverage,
+      explanation: `Visible evidence coverage is ${evidenceCoverage}%, so data sufficiency is ${dataSufficiency}.`,
+      evidence: [],
+      source: "computed",
+      basis: "fact"
+    }),
+    riskLevel: breakdownItem({
+      status: signals.nonIcpContext || riskEvidence.length ? "negative" : "weak",
+      score: signals.nonIcpContext ? 85 : riskEvidence.length ? 60 : 20,
+      explanation: signals.nonIcpContext
+        ? "Visible context suggests a non-ICP, public, nonprofit, government, education, investor, or philanthropy risk."
+        : riskEvidence.length
+          ? "Some risk or disqualifier evidence is visible and should be reviewed."
+          : "No major disqualifier is visible, but human review is still required.",
+      evidence: evidenceSummaries(riskEvidence),
+      source: sourceForEvidence(riskEvidence),
+      basis: riskEvidence.length ? "fact" : "missing"
+    })
+  };
+}
+
+function breakdownItem(item: BreakdownItem): BreakdownItem {
+  return {
+    ...item,
+    explanation: truncateNatural(item.explanation, 500),
+    evidence: dedupeStrings(item.evidence).slice(0, 5)
+  };
+}
+
+function calculateEvidenceCoverage(signals: LeadDecisionSignals): number {
+  const positiveOrNegativeCoverage = [
+    signals.roleMatch,
+    signals.industryMatch,
+    signals.companySizeEvidence,
+    signals.operationalPainEvidence,
+    signals.buyerRelevance,
+    signals.sellerContextConnection,
+    signals.reliableCompany,
+    signals.hasProfileDepth
+  ].filter(Boolean).length;
+  const riskCoverage = signals.nonIcpContext ? 1 : 0;
+  return Math.max(0, Math.min(100, Math.round(((positiveOrNegativeCoverage + riskCoverage) / 9) * 100)));
+}
+
+function buildDataSufficiency(
+  signals: LeadDecisionSignals,
+  evidenceCoverage: number
+): ProfileAnalysis["dataSufficiency"] {
+  if (evidenceCoverage >= 70 && signals.hasProfileDepth && signals.reliableCompany) {
+    return "sufficient";
+  }
+
+  if (evidenceCoverage >= 35 || signals.strongCommercialContext || signals.nonIcpContext) {
+    return "partial";
+  }
+
+  return "insufficient";
+}
+
+function buildLimitedContextReasons(signals: LeadDecisionSignals, profile: LinkedInProfile): string[] {
+  return dedupeStrings([
+    !profile.about ? "About section not detected" : "",
+    !profile.currentRoleDescription ? "Current role details missing" : "",
+    !signals.companySizeEvidence ? "Company size missing" : "",
+    !signals.buyerRelevance ? "Buying intent not visible" : "",
+    !signals.operationalPainEvidence ? "No direct pain evidence" : "",
+    signals.limitedProfileContext ? "Profile text is limited to headline or short visible context" : "",
+    !signals.reliableCompany ? "Company context could not be verified" : ""
+  ].filter(Boolean));
+}
+
+function buildConfidenceReason(
+  confidence: ProfileAnalysis["confidence"],
+  signals: LeadDecisionSignals,
+  evidenceCoverage: number,
+  limitedContextReasons: string[]
+): string {
+  if (confidence === "high" && signals.nonIcpContext) {
+    return "Confidence is high because clear negative or non-ICP evidence is visible.";
+  }
+
+  if (confidence === "high") {
+    return "Confidence is high because multiple independent visible profile facts support the decision.";
+  }
+
+  if (confidence === "medium") {
+    const reason = limitedContextReasons.length
+      ? limitedContextReasons.slice(0, 3).join(", ")
+      : `evidence coverage is ${evidenceCoverage}%`;
+    return `Confidence is medium because ${reason}.`;
+  }
+
+  return "Confidence is low because the visible profile context is not sufficient for a reliable sales decision.";
+}
+
+function buildActionRisks(signals: LeadDecisionSignals, limitedContextReasons: string[]): string[] {
+  const risks = [
+    signals.nonIcpContext ? "Visible non-ICP or public-profile context may make outreach inappropriate." : "",
+    !signals.operationalPainEvidence ? "Direct CRM, RevOps, outbound, or sales-workflow pain is not confirmed." : "",
+    !signals.buyerRelevance ? "Buyer relevance is not confirmed." : "",
+    !signals.reliableCompany ? "Company context may be incomplete or unverified." : "",
+    ...limitedContextReasons.filter((reason) => /buying intent|company size/i.test(reason))
+  ];
+
+  return dedupeStrings(risks.filter(Boolean)).slice(0, 3);
+}
+
+function buildActionPrerequisites(signals: LeadDecisionSignals, action: ProfileAnalysis["recommendedAction"]): string[] {
+  if (action === "Do not contact yet") {
+    return ["Wait for clearer ICP and buyer-relevance evidence before outreach."];
+  }
+
+  return dedupeStrings([
+    !signals.buyerRelevance ? "Confirm the person influences CRM, RevOps, sales, or prospecting workflow decisions." : "",
+    !signals.operationalPainEvidence ? "Confirm a current CRM, HubSpot, RevOps, outbound, or lead workflow pain." : "",
+    !signals.companySizeEvidence ? "Review company size or operating context." : ""
+  ].filter(Boolean)).slice(0, 3);
+}
+
+function buildActionExpiration(signals: LeadDecisionSignals, action: ProfileAnalysis["recommendedAction"]): string {
+  if (!signals.operationalPainEvidence || !signals.buyerRelevance) {
+    return "Re-evaluate after confirming HubSpot usage or CRM workflow pain";
+  }
+
+  if (!signals.reliableCompany || !signals.companySizeEvidence) {
+    return "Re-evaluate after reviewing company context";
+  }
+
+  if (action === "Pursue now") {
+    return "No immediate re-evaluation needed";
+  }
+
+  return "Re-evaluate when a relevant trigger appears";
+}
+
+function buildDecisionChangeConditions(signals: LeadDecisionSignals): ProfileAnalysis["decisionChangeConditions"] {
+  const rawConditions: Array<ProfileAnalysis["decisionChangeConditions"][number] | null> = [
+    !signals.sellerContextConnection
+      ? {
+          condition: "Uses HubSpot or owns a CRM workflow",
+          currentState: "Not confirmed",
+          impactIfConfirmed: "Would materially increase buyer relevance for this product.",
+          recommendedActionIfConfirmed: "Pursue now" as const
+        }
+      : null,
+    !signals.operationalPainEvidence
+      ? {
+          condition: "Direct CRM, RevOps, outbound, or LinkedIn-to-HubSpot workflow pain is visible",
+          currentState: "Not confirmed",
+          impactIfConfirmed: "Would increase confidence that the outreach angle is grounded in a real need.",
+          recommendedActionIfConfirmed: "Pursue now" as const
+        }
+      : null,
+    !signals.companySizeEvidence
+      ? {
+          condition: "Company size fits the saved ICP",
+          currentState: "Not confirmed",
+          impactIfConfirmed: "Would improve company fit and decision confidence.",
+          recommendedActionIfConfirmed: "Research more" as const
+        }
+      : null,
+    signals.nonIcpContext
+      ? {
+          condition: "Commercial CRM, RevOps, or B2B sales context becomes visible",
+          currentState: "Not confirmed",
+          impactIfConfirmed: "Could reduce the current non-ICP risk.",
+          recommendedActionIfConfirmed: "Research more" as const
+        }
+      : null,
+    !signals.reliableCompany
+      ? {
+          condition: "Current company context is verified",
+          currentState: "Not confirmed",
+          impactIfConfirmed: "Would make the CRM sync and sales decision more reliable.",
+          recommendedActionIfConfirmed: "Research more" as const
+        }
+      : null
+  ];
+  const conditions = rawConditions.filter((item): item is ProfileAnalysis["decisionChangeConditions"][number] => Boolean(item));
+
+  return conditions.slice(0, 5);
+}
+
+function buildNextBestResearchActions(
+  signals: LeadDecisionSignals,
+  action: ProfileAnalysis["recommendedAction"]
+): ProfileAnalysis["nextBestResearchActions"] {
+  if (action === "Pursue now" && signals.operationalPainEvidence && signals.companySizeEvidence) {
+    return [];
+  }
+
+  const rawActions: Array<ProfileAnalysis["nextBestResearchActions"][number] | null> = [
+    !signals.sellerContextConnection || !signals.buyerRelevance
+      ? {
+          priority: "high" as const,
+          action: "Confirm whether this person influences CRM, HubSpot, RevOps, or sales workflow decisions.",
+          reason: "Buyer relevance is the most important missing sales-decision input.",
+          expectedDecisionImpact: "Could move the decision toward Pursue now or keep it at Research more.",
+          safeSourceSuggestion: "Review the visible About or current Experience section"
+        }
+      : null,
+    !signals.operationalPainEvidence
+      ? {
+          priority: "high" as const,
+          action: "Check for visible evidence of CRM hygiene, outbound, LinkedIn prospecting, or lead workflow pain.",
+          reason: "The outreach angle should not assume pain that is not visible.",
+          expectedDecisionImpact: "Could improve outreach readiness or reveal that the lead should stay lower priority.",
+          safeSourceSuggestion: "Ask a low-pressure qualification question"
+        }
+      : null,
+    !signals.companySizeEvidence
+      ? {
+          priority: "medium" as const,
+          action: "Review public company size or operating context.",
+          reason: "Company fit affects confidence but should not be guessed.",
+          expectedDecisionImpact: "Could increase confidence or keep the decision at Research more.",
+          safeSourceSuggestion: "Review public company size information"
+        }
+      : null,
+    signals.nonIcpContext
+      ? {
+          priority: "high" as const,
+          action: "Verify whether any commercial CRM, RevOps, or B2B sales context is actually visible.",
+          reason: "Current visible context suggests possible non-ICP risk.",
+          expectedDecisionImpact: "Could confirm Do not contact yet or justify a cautious re-review.",
+          safeSourceSuggestion: "Review the visible About section"
+        }
+      : null
+  ];
+  const actions = rawActions.filter((item): item is ProfileAnalysis["nextBestResearchActions"][number] => Boolean(item));
+
+  return dedupeByAction(actions).slice(0, 3);
+}
+
+function buildOutreachReadiness(
+  signals: LeadDecisionSignals,
+  confidence: ProfileAnalysis["confidence"],
+  dataSufficiency: ProfileAnalysis["dataSufficiency"],
+  action: ProfileAnalysis["recommendedAction"]
+): ProfileAnalysis["outreachReadiness"] {
+  const blockers = dedupeStrings([
+    !signals.buyerRelevance ? "No confirmed buyer relevance" : "",
+    !signals.operationalPainEvidence ? "No direct pain evidence" : "",
+    !signals.reliableCompany ? "Company context missing" : "",
+    signals.nonIcpContext ? "Potential non-ICP profile" : "",
+    dataSufficiency === "insufficient" ? "Visible profile data is insufficient" : "",
+    "Existing relationship context is missing"
+  ].filter(Boolean)).slice(0, 6);
+  const prerequisites = buildActionPrerequisites(signals, action);
+
+  if (signals.nonIcpContext || action === "Do not contact yet") {
+    return {
+      readiness: "avoid",
+      readinessScore: 15,
+      timingRecommendation: "Do not contact yet",
+      reason: "Visible risk or non-ICP context makes outreach unsafe without stronger evidence.",
+      blockers,
+      prerequisites
+    };
+  }
+
+  if (confidence === "low" || dataSufficiency === "insufficient") {
+    return {
+      readiness: "not_ready",
+      readinessScore: 35,
+      timingRecommendation: "Research first",
+      reason: "The decision does not have enough visible evidence for outreach readiness.",
+      blockers,
+      prerequisites
+    };
+  }
+
+  if (action === "Pursue now" && signals.operationalPainEvidence && signals.buyerRelevance && blockers.length <= 1) {
+    return {
+      readiness: "ready",
+      readinessScore: 85,
+      timingRecommendation: "Contact now",
+      reason: "Multiple relevant signals are visible and the draft can be reviewed manually.",
+      blockers,
+      prerequisites
+    };
+  }
+
+  return {
+    readiness: "almost_ready",
+    readinessScore: signals.strongCommercialContext ? 72 : 60,
+    timingRecommendation: "Research first",
+    reason: signals.strongCommercialContext
+      ? "Strong HubSpot, CRM, or RevOps relevance is visible, but buying intent or direct workflow pain is not fully confirmed."
+      : "Some relevance is visible, but important outreach assumptions still need review.",
+    blockers,
+    prerequisites
+  };
+}
+
+function buildOutreachCoach(
+  readiness: ProfileAnalysis["outreachReadiness"],
+  signals: LeadDecisionSignals
+): ProfileAnalysis["outreachCoach"] {
+  if (readiness.readiness === "avoid") {
+    return {
+      verdict: "Do not send yet",
+      message: "The current visible evidence is not safe enough for outreach.",
+      mainWarning: signals.nonIcpContext
+        ? "Do not treat public, nonprofit, government, investor, or philanthropy context as commercial buying intent."
+        : "Do not send before resolving the visible risks.",
+      recommendedPreparation: "Wait for clearer ICP, buyer relevance, or workflow-pain evidence.",
+      humanReviewRequired: true
+    };
+  }
+
+  if (readiness.readiness === "not_ready" || readiness.timingRecommendation === "Research first") {
+    return {
+      verdict: "Research before sending",
+      message: "The profile may be relevant, but the draft should not assume unconfirmed workflow pain.",
+      mainWarning: "Do not imply the prospect uses HubSpot or has a messy CRM unless that is visible.",
+      recommendedPreparation: "Confirm buyer relevance and direct CRM, RevOps, outbound, or lead workflow context.",
+      humanReviewRequired: true
+    };
+  }
+
+  return {
+    verdict: "Send after review",
+    message: "The profile has enough visible relevance to draft outreach, but a human should review every claim.",
+    mainWarning: "Keep the message concise and avoid unsupported claims.",
+    recommendedPreparation: "Remove assumptions that are not supported by the visible profile.",
+    humanReviewRequired: true
+  };
+}
+
+function evidenceForCategory(evidence: ScoreEvidence[], ...categories: ScoreEvidence["category"][]): string[] {
+  return evidenceSummaries(evidence.filter((item) => categories.includes(item.category)));
+}
+
+function evidenceSummaries(evidence: ScoreEvidence[]): string[] {
+  return dedupeStrings(evidence.map((item) => item.evidenceText || item.summary).filter(Boolean)).slice(0, 5);
+}
+
+function sourceForEvidence(evidence: ScoreEvidence[], ...categories: ScoreEvidence["category"][]): string {
+  const item = categories.length ? evidence.find((entry) => categories.includes(entry.category)) : evidence[0];
+  return item?.sourceSection ?? "not_available";
+}
+
+function basisForEvidence(evidence: ScoreEvidence[], ...categories: ScoreEvidence["category"][]): BreakdownItem["basis"] {
+  const items = categories.length ? evidence.filter((entry) => categories.includes(entry.category)) : evidence;
+  if (!items.length) {
+    return "missing";
+  }
+
+  const hasFact = items.some((item) => item.basis === "fact");
+  const hasInference = items.some((item) => item.basis === "inference");
+  if (hasFact && hasInference) {
+    return "mixed";
+  }
+
+  return hasFact ? "fact" : "inference";
+}
+
+function dedupeByAction(items: ProfileAnalysis["nextBestResearchActions"]): ProfileAnalysis["nextBestResearchActions"] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = normalize(item.action);
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function recommendedNextStep(action: ProfileAnalysis["recommendedAction"]): string {

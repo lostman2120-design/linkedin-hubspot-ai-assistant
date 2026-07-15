@@ -203,6 +203,18 @@ function buildOpenAiErrorDetails(raw: ChatCompletionResponse, detail: string): s
 }
 
 const dmVariantListFields = ["personalizationUsed", "offerContextUsed", "factsUsed", "inferencesUsed", "warnings"] as const;
+const analysisListFields = ["actionRisks", "actionPrerequisites", "limitedContextReasons", "positiveSignals", "negativeSignals", "missingInformation", "riskWarnings", "whatToAvoid"] as const;
+const decisionBreakdownFields = [
+  "roleFit",
+  "industryFit",
+  "companyFit",
+  "buyerRelevance",
+  "painEvidence",
+  "timingSignal",
+  "relationshipSignal",
+  "dataSufficiency",
+  "riskLevel"
+] as const;
 
 export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
   if (!isRecord(value)) {
@@ -210,9 +222,16 @@ export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
   }
 
   const leadScore = typeof value.leadScore === "number" && Number.isFinite(value.leadScore) ? value.leadScore : 0;
-  return {
+  const normalized: Record<string, unknown> = {
     ...value,
     recommendedAction: normalizeRecommendedAction(value.recommendedAction, leadScore),
+    decisionConfidence: normalizeLowerEnum(value.decisionConfidence, ["high", "medium", "low"]),
+    dataSufficiency: normalizeLowerEnum(value.dataSufficiency, ["sufficient", "partial", "insufficient"]),
+    outreachReadiness: normalizeOutreachReadiness(value.outreachReadiness),
+    outreachCoach: normalizeOutreachCoach(value.outreachCoach),
+    decisionBreakdown: normalizeDecisionBreakdown(value.decisionBreakdown),
+    decisionChangeConditions: normalizeObjectArray(value.decisionChangeConditions, 5),
+    nextBestResearchActions: normalizeObjectArray(value.nextBestResearchActions, 3),
     dmVariants: Array.isArray(value.dmVariants) ? value.dmVariants.map((variant) => {
       if (!isRecord(variant)) {
         return variant;
@@ -227,6 +246,12 @@ export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
       return normalizedVariant;
     }) : value.dmVariants
   };
+
+  for (const field of analysisListFields) {
+    normalized[field] = normalizeStringArrayField(normalized[field]);
+  }
+
+  return normalized;
 }
 
 function normalizeStringArrayField(value: unknown): string[] {
@@ -235,6 +260,85 @@ function normalizeStringArrayField(value: unknown): string[] {
   }
 
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function normalizeObjectArray(value: unknown, maxItems: number): unknown {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(isRecord).slice(0, maxItems);
+}
+
+function normalizeLowerEnum<const T extends readonly string[]>(value: unknown, allowed: T): T[number] | unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+  return allowed.find((item) => item === normalized) ?? value;
+}
+
+function normalizeTitleEnum<const T extends readonly string[]>(value: unknown, allowed: T): T[number] | unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  return allowed.find((item) => item.toLowerCase() === normalized) ?? value;
+}
+
+function normalizeDecisionBreakdown(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const normalized: Record<string, unknown> = { ...value };
+  for (const field of decisionBreakdownFields) {
+    if (!isRecord(normalized[field])) {
+      continue;
+    }
+
+    const item = { ...(normalized[field] as Record<string, unknown>) };
+    item.status = normalizeLowerEnum(item.status, ["strong", "moderate", "weak", "missing", "negative"] as const);
+    item.basis = normalizeLowerEnum(item.basis, ["fact", "inference", "mixed", "missing"] as const);
+    item.evidence = normalizeStringArrayField(item.evidence);
+    normalized[field] = item;
+  }
+
+  return normalized;
+}
+
+function normalizeOutreachReadiness(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  return {
+    ...value,
+    readiness: normalizeLowerEnum(value.readiness, ["ready", "almost_ready", "not_ready", "avoid"] as const),
+    timingRecommendation: normalizeTitleEnum(
+      value.timingRecommendation,
+      ["Contact now", "Research first", "Wait for a stronger signal", "Do not contact yet"] as const
+    ),
+    blockers: normalizeStringArrayField(value.blockers),
+    prerequisites: normalizeStringArrayField(value.prerequisites)
+  };
+}
+
+function normalizeOutreachCoach(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  return {
+    ...value,
+    verdict: normalizeTitleEnum(
+      value.verdict,
+      ["Send after review", "Research before sending", "Rewrite before sending", "Do not send yet"] as const
+    ),
+    humanReviewRequired: true
+  };
 }
 
 function normalizeDmVariantLabel(value: unknown): unknown {
@@ -350,6 +454,9 @@ export class OpenAiService {
         "Facts must be based on visible profile text or saved user settings. Inferences must be labeled as inferences.",
         "Use Research more or Low priority when visible evidence is limited, risk is high, or fit is unclear.",
         "Do not claim the person uses HubSpot unless it is explicitly visible.",
+        "For Sales Decision Intelligence fields, use cautious explanations and unconfirmed conditional language.",
+        "Never recommend crawling, scraping, automatic LinkedIn browsing, cookie access, or automatic DM sending.",
+        "Always state that human review is required before outreach.",
         "Generate three concise LinkedIn DM variants: Soft opener, Direct value pitch, and Feedback request.",
         "Make every DM variant consistent with the returned outreachStrategy.",
         buildEnglishOnlyInstruction(),
@@ -367,11 +474,24 @@ Return one JSON object with these exact fields:
 - riskWarnings: an array of short English strings
 - recommendedAction: exactly one of "Pursue now", "Research more", "Low priority", or "Do not contact yet"
 - actionReason: a concise English explanation of why recommendedAction is appropriate; explain the sales decision, not the DM wording
+- actionRisks: up to three short strings
+- actionPrerequisites: up to three short strings
+- actionExpiration: a short re-evaluation condition
 - recommendedNextAction: a short English sentence
+- decisionConfidence: "high", "medium", or "low"
+- dataSufficiency: "sufficient", "partial", or "insufficient"
+- evidenceCoverage: an integer from 0 to 100
+- confidenceReason: a short English explanation
+- limitedContextReasons: an array of short English strings
 - recommendedOutreachAngle: a short English label such as Feedback request, Soft opener, Direct pitch, Research first, or Skip / not a good fit
 - whyThisAngle: a short English explanation
 - whatToAvoid: an array of short English strings
 - outreachStrategy: an object with whyRelevant, bestAngle, painHypothesis, whatToAvoid, and suggestedCTA; every field must be a concise English string
+- decisionBreakdown: an object with roleFit, industryFit, companyFit, buyerRelevance, painEvidence, timingSignal, relationshipSignal, dataSufficiency, riskLevel
+- decisionChangeConditions: up to five objects with condition, currentState, impactIfConfirmed, recommendedActionIfConfirmed
+- nextBestResearchActions: up to three objects with priority, action, reason, expectedDecisionImpact, safeSourceSuggestion
+- outreachReadiness: an object with readiness, readinessScore, timingRecommendation, reason, blockers, prerequisites
+- outreachCoach: an object with verdict, message, mainWarning, recommendedPreparation, humanReviewRequired
 - persona: a short English description
 - painPoints: an array of short English strings
 - icebreaker: a short English sentence
@@ -379,6 +499,20 @@ Return one JSON object with these exact fields:
 - scoreEvidence: an array of evidence objects with id, signalType, basis, category, summary, evidenceText, sourceSection, confidence, scoreImpact
 - scoringMetadata: scoringVersion, finalScore, fitLabel, confidence, factsUsedCount, inferencesUsedCount, missingCriteriaCount, disqualifierCount, analysisDepth
 - dmVariants: exactly three objects with label, useCase, text, personalizationUsed, offerContextUsed, factsUsed, inferencesUsed, warnings, riskLevel
+
+Every decisionBreakdown item must have exactly:
+{
+  "status": "strong | moderate | weak | missing | negative",
+  "score": 0,
+  "explanation": "string",
+  "evidence": ["string"],
+  "source": "string",
+  "basis": "fact | inference | mixed | missing"
+}
+
+outreachCoach.humanReviewRequired must always be true.
+Do not use "Send now"; use "Send after review" only when appropriate.
+Research actions must be safe manual actions only, such as reviewing visible profile sections, public company information, or asking a low-pressure qualification question.
 
 For every dmVariants item, these fields must always be arrays of strings, never booleans:
 {

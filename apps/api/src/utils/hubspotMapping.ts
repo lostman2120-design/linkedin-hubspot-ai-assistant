@@ -55,6 +55,16 @@ export const LHA_CONTACT_PROPERTY_DEFINITIONS: HubSpotContactPropertyDefinition[
   propertyDefinition("lha_main_reason", "LHA Main Reason", "string", "textarea"),
   propertyDefinition("lha_main_risk", "LHA Main Risk", "string", "textarea"),
   propertyDefinition("lha_missing_info", "LHA Missing Info", "string", "textarea"),
+  propertyDefinition("lha_decision_confidence", "LHA Decision Confidence", "string", "text"),
+  propertyDefinition("lha_data_sufficiency", "LHA Data Sufficiency", "string", "text"),
+  propertyDefinition("lha_evidence_coverage", "LHA Evidence Coverage", "number", "number"),
+  propertyDefinition("lha_outreach_readiness", "LHA Outreach Readiness", "string", "text"),
+  propertyDefinition("lha_timing_recommendation", "LHA Timing Recommendation", "string", "text"),
+  propertyDefinition("lha_action_reason", "LHA Action Reason", "string", "textarea"),
+  propertyDefinition("lha_action_risks", "LHA Action Risks", "string", "textarea"),
+  propertyDefinition("lha_action_prerequisites", "LHA Action Prerequisites", "string", "textarea"),
+  propertyDefinition("lha_next_research_action", "LHA Next Research Action", "string", "textarea"),
+  propertyDefinition("lha_last_decision_change", "LHA Last Decision Change", "string", "textarea"),
   propertyDefinition("lha_last_analyzed_at", "LHA Last Analyzed At", "datetime", "date"),
   propertyDefinition("lha_source", "LHA Source", "string", "text")
 ];
@@ -211,7 +221,6 @@ export function buildHubSpotAnalysisNoteBody(input: {
 }): string {
   const profileUrl = getProfileUrl(input.profile);
   const evidence = dedupeNoteEvidence(input.analysis.scoreEvidence ?? []);
-  const scoringMetadata = input.analysis.scoringMetadata;
   const outreachStrategy = safeOutreachStrategy(input.analysis);
   const analyzedAt = new Date().toISOString();
   const fitLabel = input.analysis.fitLabel ?? leadFitLabel(input.analysis.leadScore);
@@ -239,20 +248,31 @@ export function buildHubSpotAnalysisNoteBody(input: {
       noteRow("ICP Fit Label", fitLabel),
       noteRow("Recommended Action", recommendedAction),
       noteRow("Action reason", actionReason),
-      noteRow("Confidence", input.analysis.confidence),
-      noteRow("Analysis depth", scoringMetadata?.analysisDepth),
+      noteListRow("Action risks", input.analysis.actionRisks ?? []),
+      noteListRow("Action prerequisites", input.analysis.actionPrerequisites ?? []),
+      noteRow("Decision confidence", input.analysis.decisionConfidence ?? input.analysis.confidence),
+      noteRow("Data sufficiency", input.analysis.dataSufficiency),
+      noteRow("Evidence coverage", typeof input.analysis.evidenceCoverage === "number" ? `${input.analysis.evidenceCoverage}%` : undefined),
       noteRow("Persona", input.analysis.persona)
     ]),
+    noteSection("Outreach Readiness", [
+      noteRow("Readiness", input.analysis.outreachReadiness?.readiness?.replace(/_/g, " ") ?? "Not enough evidence"),
+      noteRow("Timing recommendation", input.analysis.outreachReadiness?.timingRecommendation ?? "Research first"),
+      noteRow("Reason", input.analysis.outreachReadiness?.reason ?? "More visible evidence is needed before outreach."),
+      noteListRow("Blockers", input.analysis.outreachReadiness?.blockers ?? []),
+      noteListRow("Prerequisites", input.analysis.outreachReadiness?.prerequisites ?? [])
+    ]),
+    noteSection("Decision Breakdown", decisionBreakdownRows(input.analysis.decisionBreakdown)),
+    noteSection("What Would Change This Decision", decisionChangeConditionRows(input.analysis.decisionChangeConditions ?? [])),
+    noteSection("Next Best Research Action", researchActionRows(input.analysis.nextBestResearchActions ?? [])),
     noteSection("Score Evidence", [
-      noteListRow("Positive signals", input.analysis.positiveSignals ?? []),
-      noteListRow("Pain points", input.analysis.painPoints ?? []),
-      noteListRow("Missing information", input.analysis.missingInformation ?? []),
       scoreEvidenceRow(
         "Confirmed positive evidence",
         evidence.filter((item) => item.signalType === "positive" && item.basis === "fact")
       ),
+      noteListRow("Missing information", input.analysis.missingInformation ?? []),
       scoreEvidenceRow("AI inferences", evidence.filter((item) => item.basis === "inference")),
-      noteListRow("Risks / disqualifiers", [
+      noteListRow("Negative signals / risks", [
         ...(input.analysis.riskWarnings ?? []),
         ...(input.analysis.negativeSignals ?? []),
         ...evidence.filter((item) => item.signalType === "disqualifier").map((item) => item.summary)
@@ -264,6 +284,12 @@ export function buildHubSpotAnalysisNoteBody(input: {
       noteRow("Pain hypothesis", outreachStrategy.painHypothesis),
       noteRow("What to avoid", outreachStrategy.whatToAvoid),
       noteRow("Suggested CTA", outreachStrategy.suggestedCTA)
+    ]),
+    noteSection("AI Outreach Coach", [
+      noteRow("Verdict", input.analysis.outreachCoach?.verdict),
+      noteRow("Warning", input.analysis.outreachCoach?.mainWarning),
+      noteRow("Preparation", input.analysis.outreachCoach?.recommendedPreparation),
+      noteRow("Human review required", input.analysis.outreachCoach?.humanReviewRequired ? "Yes" : "Yes")
     ]),
     noteSection("DM Drafts", [
       noteRow("Suggested DM", input.generatedDm?.message),
@@ -279,7 +305,7 @@ export function buildHubSpotAnalysisNoteBody(input: {
       noteRow("Recommended next action", input.analysis.recommendedNextAction ?? recommendedAction)
     ]),
     noteSection("Metadata", [
-      noteRow("Tool", "LinkedIn to HubSpot AI Assistant v0.4.0"),
+      noteRow("Tool", "LinkedIn to HubSpot AI Assistant v0.5.0"),
       noteRow("Saved at", analyzedAt)
     ])
   ]
@@ -362,6 +388,16 @@ export function buildLhaPropertyValues(analysis: ProfileAnalysis, analyzedAt: st
     lha_main_reason: cleanProperty(analysis.actionReason) ?? outreachStrategy.whyRelevant,
     lha_main_risk: mainRisk,
     lha_missing_info: analysis.missingInformation?.join("; "),
+    lha_decision_confidence: analysis.decisionConfidence ?? analysis.confidence,
+    lha_data_sufficiency: analysis.dataSufficiency,
+    lha_evidence_coverage: typeof analysis.evidenceCoverage === "number" ? String(analysis.evidenceCoverage) : undefined,
+    lha_outreach_readiness: analysis.outreachReadiness?.readiness,
+    lha_timing_recommendation: analysis.outreachReadiness?.timingRecommendation,
+    lha_action_reason: cleanProperty(analysis.actionReason),
+    lha_action_risks: analysis.actionRisks?.join("; "),
+    lha_action_prerequisites: analysis.actionPrerequisites?.join("; "),
+    lha_next_research_action: analysis.nextBestResearchActions?.[0]?.action,
+    lha_last_decision_change: analysis.actionExpiration,
     lha_last_analyzed_at: analyzedAt,
     lha_source: "LinkedIn"
   });
@@ -475,6 +511,63 @@ function noteListRow(label: string, values: string[] | undefined): string | null
     .join("<br>")}`;
 }
 
+function decisionBreakdownRows(breakdown: ProfileAnalysis["decisionBreakdown"] | undefined): Array<string | null> {
+  if (!breakdown) {
+    return [noteRow("Decision breakdown", "Not enough evidence")];
+  }
+
+  const labels: Array<[keyof ProfileAnalysis["decisionBreakdown"], string]> = [
+    ["roleFit", "Role fit"],
+    ["industryFit", "Industry fit"],
+    ["companyFit", "Company fit"],
+    ["buyerRelevance", "Buyer relevance"],
+    ["painEvidence", "Pain evidence"],
+    ["timingSignal", "Timing signal"],
+    ["relationshipSignal", "Relationship signal"],
+    ["dataSufficiency", "Data sufficiency"],
+    ["riskLevel", "Risk level"]
+  ];
+
+  return labels.map(([key, label]) => {
+    const item = breakdown[key];
+    if (!item) {
+      return null;
+    }
+
+    const evidence = item.evidence?.length ? ` Evidence: ${item.evidence.slice(0, 2).join("; ")}` : "";
+    return noteRow(
+      label,
+      `${titleCase(item.status)} - ${item.score}. ${item.explanation}${evidence ? truncateNoteText(evidence, 260) : ""}`
+    );
+  });
+}
+
+function decisionChangeConditionRows(conditions: ProfileAnalysis["decisionChangeConditions"]): Array<string | null> {
+  if (!conditions.length) {
+    return [noteRow("Conditions", "No specific decision-change condition was identified.")];
+  }
+
+  return conditions.slice(0, 5).map((condition) =>
+    noteRow(
+      condition.condition,
+      `Current state: ${condition.currentState}. If confirmed: ${condition.impactIfConfirmed}. Possible action: ${condition.recommendedActionIfConfirmed}.`
+    )
+  );
+}
+
+function researchActionRows(actions: ProfileAnalysis["nextBestResearchActions"]): Array<string | null> {
+  if (!actions.length) {
+    return [noteRow("Research action", "No extra research action was required by the current decision.")];
+  }
+
+  return actions.slice(0, 3).map((action) =>
+    noteRow(
+      `${titleCase(action.priority)} priority`,
+      `${action.action} Why: ${action.reason} Impact: ${action.expectedDecisionImpact} Safe source: ${action.safeSourceSuggestion}.`
+    )
+  );
+}
+
 function scoreEvidenceRow(label: string, evidence: ScoreEvidence[]): string | null {
   if (!evidence.length) {
     return null;
@@ -576,6 +669,14 @@ function icpSummary(userSettings: UserSettings | undefined): string | undefined 
   ]
     .filter((item): item is string => Boolean(item))
     .join(" | ");
+}
+
+function titleCase(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function escapeHtml(value: string): string {

@@ -393,4 +393,131 @@ describe("evidence-based lead scoring", () => {
     expect(relevantContext.scoreEvidence.some((item) => item.signalType === "disqualifier")).toBe(false);
     expect(excludedContext.scoreEvidence.some((item) => item.signalType === "disqualifier")).toBe(true);
   });
+
+  it("adds v0.5 decision intelligence fields without turning AI inferences into facts", () => {
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 78,
+        persona: "HubSpot and RevOps consultant",
+        painPoints: ["CRM workflow quality"],
+        icebreaker: "Noticed your HubSpot work.",
+        recommendedAction: "Research more",
+        confidence: "medium",
+        scoreEvidence: [
+          {
+            id: "ai-inference",
+            signalType: "positive",
+            basis: "inference",
+            category: "technology",
+            summary: "May influence CRM workflow decisions",
+            evidenceText: "Consultant HubSpot CRM",
+            sourceSection: "headline",
+            confidence: "Medium",
+            scoreImpact: 8
+          }
+        ]
+      },
+      {
+        fullName: "Joris Milloux",
+        headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+        extractionWarnings: ["Limited profile context detected. AI score may be less accurate."],
+        contextConfidence: "medium",
+        profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+      },
+      {
+        ...DEFAULT_USER_SETTINGS,
+        targetRoles: "HubSpot Consultant, RevOps Consultant, CRM Consultant",
+        targetIndustries: "HubSpot consulting, RevOps, CRM implementation",
+        mainPainPointsSolved: "HubSpot CRM implementation, CRM hygiene, outbound prospecting"
+      }
+    );
+
+    expect(Object.keys(normalized.decisionBreakdown)).toEqual([
+      "roleFit",
+      "industryFit",
+      "companyFit",
+      "buyerRelevance",
+      "painEvidence",
+      "timingSignal",
+      "relationshipSignal",
+      "dataSufficiency",
+      "riskLevel"
+    ]);
+    expect(normalized.decisionBreakdown.roleFit.status).toMatch(/strong|moderate/);
+    expect(normalized.decisionBreakdown.companyFit.status).toBe("missing");
+    expect(normalized.decisionConfidence).toBe("medium");
+    expect(normalized.dataSufficiency).toBe("partial");
+    expect(normalized.evidenceCoverage).toBeGreaterThan(0);
+    expect(normalized.limitedContextReasons).toContain("Company size missing");
+    expect(normalized.nextBestResearchActions.length).toBeGreaterThanOrEqual(1);
+    expect(normalized.nextBestResearchActions.map((item) => item.safeSourceSuggestion).join(" ")).not.toMatch(/crawl|scrape|cookie|automation/i);
+    expect(normalized.outreachReadiness.readiness).toBe("almost_ready");
+    expect(normalized.outreachReadiness.timingRecommendation).toBe("Research first");
+    expect(normalized.outreachCoach.humanReviewRequired).toBe(true);
+    expect(normalized.outreachCoach.verdict).toBe("Research before sending");
+    expect(normalized.scoreEvidence.filter((item) => item.summary === "May influence CRM workflow decisions")).toHaveLength(1);
+    expect(normalized.scoreEvidence.find((item) => item.summary === "May influence CRM workflow decisions")?.basis).toBe("inference");
+  });
+
+  it("keeps public non-ICP profiles not ready for outreach in v0.5 fields", () => {
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 74,
+        fitLabel: "Strong fit",
+        persona: "High-profile founder and philanthropist",
+        painPoints: ["Unknown"],
+        icebreaker: "Noticed your foundation work.",
+        recommendedAction: "Research more",
+        confidence: "high"
+      },
+      {
+        fullName: "Bill Gates",
+        headline: "Co-chair at Gates Foundation | Founder | Philanthropist",
+        companyName: "Gates Foundation",
+        currentRoleCompany: "Gates Foundation",
+        about: "Focused on global health, education, philanthropy, and nonprofit initiatives.",
+        profileUrl: "https://www.linkedin.com/in/williamhgates/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(normalized.leadScore).toBeLessThanOrEqual(39);
+    expect(normalized.outreachReadiness.readiness).toBe("avoid");
+    expect(normalized.outreachReadiness.timingRecommendation).toBe("Do not contact yet");
+    expect(normalized.outreachCoach.verdict).toBe("Do not send yet");
+    expect(normalized.decisionBreakdown.riskLevel.status).toBe("negative");
+    expect(normalized.positiveSignals.join(" ")).not.toMatch(/non-ICP|nonprofit|government|investor/i);
+  });
+
+  it("allows rich HubSpot agency profiles to reach 90 only with independent evidence", () => {
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 96,
+        fitLabel: "Strong fit",
+        persona: "HubSpot agency RevOps buyer",
+        painPoints: ["CRM hygiene", "Outbound workflow quality"],
+        icebreaker: "Noticed your HubSpot agency work.",
+        recommendedAction: "Pursue now",
+        confidence: "high"
+      },
+      {
+        fullName: "Avery Johnson",
+        headline: "Founder & RevOps Lead at Acme HubSpot Agency",
+        companyName: "Acme HubSpot Agency",
+        currentRoleCompany: "Acme HubSpot Agency",
+        currentRoleDescription: "Owns HubSpot CRM implementation, outbound lead generation, CRM hygiene, and sales operations.",
+        about: "Helping 51-200 employees B2B SaaS teams improve HubSpot CRM, LinkedIn prospecting workflows, RevOps automation, and lead qualification.",
+        contextConfidence: "high",
+        profileUrl: "https://www.linkedin.com/in/avery/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(normalized.leadScore).toBeGreaterThanOrEqual(90);
+    expect(normalized.leadScore).toBeLessThanOrEqual(95);
+    expect(normalized.fitLabel).toBe("Strong fit");
+    expect(normalized.decisionConfidence).toBe("high");
+    expect(["ready", "almost_ready"]).toContain(normalized.outreachReadiness.readiness);
+    expect(normalized.outreachCoach.humanReviewRequired).toBe(true);
+  });
 });

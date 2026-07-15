@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_SELLER_CONTEXT, DEFAULT_USER_SETTINGS } from "@linkedin-hubspot-ai/shared";
 import { buildHubSpotAnalysisNoteBody } from "../utils/hubspotMapping.js";
 
-describe("v0.4 HubSpot analysis note", () => {
-  it("formats legacy analysis data with v0.4 decision, strategy, evidence, and metadata sections", () => {
+describe("v0.5 HubSpot analysis note", () => {
+  it("formats legacy analysis data with v0.5 decision intelligence, strategy, evidence, and metadata sections", () => {
     const note = buildHubSpotAnalysisNoteBody({
       profile: {
         fullName: "Avery Johnson",
@@ -92,7 +92,11 @@ describe("v0.4 HubSpot analysis note", () => {
     expect(note).toContain("Active ICP summary");
     expect(note).toContain("Offer/product");
     expect(note).toContain("LinkedIn to HubSpot AI Assistant");
-    expect(note).toContain("Analysis depth");
+    expect(note).toContain("Decision confidence");
+    expect(note).toContain("Outreach Readiness");
+    expect(note).toContain("Decision Breakdown");
+    expect(note).toContain("What Would Change This Decision");
+    expect(note).toContain("Next Best Research Action");
     expect(note).toContain("Confirmed positive evidence");
     expect(note).toContain("AI inferences");
     expect(note).toContain("RevOps Lead at Example Corp");
@@ -104,7 +108,8 @@ describe("v0.4 HubSpot analysis note", () => {
     expect(note).toContain("Pain hypothesis");
     expect(note).toContain("What to avoid");
     expect(note).toContain("Suggested CTA");
-    expect(note).toContain("Tool:</strong> LinkedIn to HubSpot AI Assistant v0.4.0");
+    expect(note).toContain("AI Outreach Coach");
+    expect(note).toContain("Tool:</strong> LinkedIn to HubSpot AI Assistant v0.5.0");
     expect(note).not.toContain("Guaranteed revenue");
   });
 });

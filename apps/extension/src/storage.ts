@@ -1,4 +1,4 @@
-import type { UserSettings } from "@linkedin-hubspot-ai/shared";
+import type { ProfileAnalysis, UserSettings } from "@linkedin-hubspot-ai/shared";
 import { UserSettingsSchema, normalizeUserSettingsInput } from "@linkedin-hubspot-ai/shared";
 import { EXTENSION_DEFAULT_API_BASE_URL } from "./extensionConfig";
 
@@ -6,6 +6,7 @@ export const SETTINGS_KEY = "linkedinHubspotAiAssistant.settings";
 export const USAGE_KEY = "linkedinHubspotAiAssistant.usage";
 export const LICENSE_STATE_KEY = "linkedinHubspotAiAssistant.licenseState";
 export const DAILY_USAGE_KEY = "linkedinHubspotAiAssistant.dailyUsage";
+export const DECISION_HISTORY_KEY = "linkedinHubspotAiAssistant.decisionHistory";
 
 export const FREE_PLAN_LIMITS = {
   profileAnalyses: 3,
@@ -37,6 +38,22 @@ export type DailyUsage = {
   date: string;
   profileAnalyses: number;
   outreachDrafts: number;
+};
+
+export type StoredDecisionSnapshot = {
+  profileUrl: string;
+  leadScore: number;
+  fitLabel: string;
+  recommendedAction: string;
+  confidence: string;
+  actionReason: string;
+  analyzedAt: string;
+};
+
+export type DecisionComparison = {
+  previous: StoredDecisionSnapshot;
+  current: StoredDecisionSnapshot;
+  mainChangeReason: string;
 };
 
 export type StorageAreaLike = {
@@ -212,4 +229,100 @@ export async function incrementDailyUsage(
   };
   await storageArea.set({ [DAILY_USAGE_KEY]: nextUsage });
   return nextUsage;
+}
+
+export async function getPreviousDecisionSnapshot(
+  profileUrl: string,
+  storageArea: StorageAreaLike = chrome.storage.local
+): Promise<StoredDecisionSnapshot | null> {
+  const stored = await storageArea.get(DECISION_HISTORY_KEY);
+  const history = parseDecisionHistory(stored[DECISION_HISTORY_KEY]);
+  return history[normalizeProfileUrlKey(profileUrl)] ?? null;
+}
+
+export async function saveDecisionSnapshot(
+  profileUrl: string,
+  analysis: ProfileAnalysis,
+  storageArea: StorageAreaLike = chrome.storage.local
+): Promise<StoredDecisionSnapshot> {
+  const stored = await storageArea.get(DECISION_HISTORY_KEY);
+  const history = parseDecisionHistory(stored[DECISION_HISTORY_KEY]);
+  const snapshot: StoredDecisionSnapshot = {
+    profileUrl: normalizeProfileUrlKey(profileUrl),
+    leadScore: analysis.leadScore,
+    fitLabel: analysis.fitLabel,
+    recommendedAction: analysis.recommendedAction,
+    confidence: analysis.decisionConfidence ?? analysis.confidence,
+    actionReason: analysis.actionReason,
+    analyzedAt: new Date().toISOString()
+  };
+  const nextHistory = trimDecisionHistory({
+    ...history,
+    [snapshot.profileUrl]: snapshot
+  });
+
+  await storageArea.set({ [DECISION_HISTORY_KEY]: nextHistory });
+  return snapshot;
+}
+
+export async function clearDecisionHistory(storageArea: StorageAreaLike = chrome.storage.local): Promise<void> {
+  await storageArea.set({ [DECISION_HISTORY_KEY]: {} });
+}
+
+function parseDecisionHistory(rawHistory: unknown): Record<string, StoredDecisionSnapshot> {
+  if (typeof rawHistory !== "object" || rawHistory === null || Array.isArray(rawHistory)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(rawHistory as Record<string, unknown>)
+      .map(([key, value]) => [normalizeProfileUrlKey(key), parseDecisionSnapshot(value)] as const)
+      .filter((entry): entry is readonly [string, StoredDecisionSnapshot] => Boolean(entry[0] && entry[1]))
+  );
+}
+
+function parseDecisionSnapshot(value: unknown): StoredDecisionSnapshot | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const input = value as Record<string, unknown>;
+  const profileUrl = typeof input.profileUrl === "string" ? normalizeProfileUrlKey(input.profileUrl) : "";
+  const leadScore = typeof input.leadScore === "number" ? input.leadScore : null;
+  const recommendedAction = typeof input.recommendedAction === "string" ? input.recommendedAction : "";
+  const analyzedAt = typeof input.analyzedAt === "string" ? input.analyzedAt : "";
+
+  if (!profileUrl || leadScore === null || !recommendedAction || !analyzedAt) {
+    return null;
+  }
+
+  return {
+    profileUrl,
+    leadScore,
+    fitLabel: typeof input.fitLabel === "string" ? input.fitLabel : "Not enough data",
+    recommendedAction,
+    confidence: typeof input.confidence === "string" ? input.confidence : "low",
+    actionReason: typeof input.actionReason === "string" ? input.actionReason : "Decision metadata only.",
+    analyzedAt
+  };
+}
+
+function trimDecisionHistory(history: Record<string, StoredDecisionSnapshot>): Record<string, StoredDecisionSnapshot> {
+  return Object.fromEntries(
+    Object.entries(history)
+      .sort((left, right) => Date.parse(right[1].analyzedAt) - Date.parse(left[1].analyzedAt))
+      .slice(0, 25)
+  );
+}
+
+function normalizeProfileUrlKey(profileUrl: string): string {
+  const cleaned = profileUrl.trim();
+  try {
+    const url = new URL(cleaned);
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return cleaned.replace(/[?#].*$/, "").replace(/\/$/, "");
+  }
 }

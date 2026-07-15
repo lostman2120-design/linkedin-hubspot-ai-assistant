@@ -150,9 +150,9 @@ Standard HubSpot contact properties:
 
 The app does not invent phone numbers, city, country, email address, or company domain. If that data is not visible or known, it stays blank.
 
-AI analysis is always saved to a structured HubSpot note when the contact is created or updated. The note includes the LinkedIn URL, ICP fit, Recommended Action, confidence, reasons, missing information, risks, Outreach Strategy, DM variants, Seller Context summary, and analysis time.
+AI analysis is always saved to a structured HubSpot note when the contact is created or updated. In v0.5.0, the note focuses on Sales Decision Intelligence: Recommended Action, Outreach Readiness, Decision Confidence, Data Sufficiency, Decision Breakdown, what would change the decision, next research actions, risks, Outreach Strategy, AI Outreach Coach, DM variants, Seller Context summary, and analysis time.
 
-v0.4.0 also creates and updates these LHA contact properties when the HubSpot token has property schema permission:
+v0.5.0 also creates and updates these LHA contact properties when the HubSpot token has property schema permission:
 
 - `lha_icp_fit_score`
 - `lha_icp_fit_label`
@@ -162,6 +162,16 @@ v0.4.0 also creates and updates these LHA contact properties when the HubSpot to
 - `lha_main_reason`
 - `lha_main_risk`
 - `lha_missing_info`
+- `lha_decision_confidence`
+- `lha_data_sufficiency`
+- `lha_evidence_coverage`
+- `lha_outreach_readiness`
+- `lha_timing_recommendation`
+- `lha_action_reason`
+- `lha_action_risks`
+- `lha_action_prerequisites`
+- `lha_next_research_action`
+- `lha_last_decision_change`
 - `lha_last_analyzed_at`
 - `lha_source`
 
@@ -667,8 +677,10 @@ Before uploading the new package:
 8. Confirm a valid license changes the badge to Beta Pro.
 9. Confirm Remove license returns the user to Free plan.
 10. Confirm the sidebar scrolls to the last button and status message.
-11. Zip `apps/extension/dist`.
-12. Upload the zip in the Chrome Web Store Developer Dashboard.
+11. Confirm Decision Breakdown, Outreach Readiness, Next Best Research Action, and AI Outreach Coach appear after Analyze Profile.
+12. Confirm HubSpot notes say `LinkedIn to HubSpot AI Assistant v0.5.0`.
+13. Zip `apps/extension/dist`.
+14. Upload the zip in the Chrome Web Store Developer Dashboard.
 
 ## How To Use It On LinkedIn
 

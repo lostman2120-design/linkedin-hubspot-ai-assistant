@@ -42,6 +42,11 @@ export function buildLeadScoringInstruction(hasTargetCustomerProfile: boolean): 
     "When About, current-role detail, company size, or broader profile context is missing, cap the score at 82 even if the headline is highly relevant.",
     "Scores of 90 or more require independent role, industry, buyer, operational-pain, company, and About or Experience evidence; a headline alone can never justify 90 or more.",
     "Public-figure, nonprofit, government, investor, education-only, and other non-ICP context belongs in negative signals or risk warnings, never positiveSignals.",
+    "Decision Breakdown, confidence, readiness, research actions, and outreach coaching must separate visible facts from unconfirmed conditions.",
+    "Recommended Action is a sales decision. Outreach Readiness is timing and preparation. Do not collapse them into the same explanation.",
+    "Decision change conditions must be phrased as unconfirmed if-confirmed conditions, not invented facts.",
+    "Next research actions must suggest only safe manual review of visible or public information, never crawling, scraping, cookie use, or automation.",
+    "Outreach coach must always require human review and must never imply automatic sending.",
     "Never score the word LinkedIn when it comes from a URL, source label, tool context, or the fact that this is a LinkedIn profile.",
     "Treat lead as a role only in a clear title phrase such as Growth Lead, Sales Lead, or RevOps Lead.",
     "If company size is missing, confidence must be medium or low. If industry and operational pain are also weak, choose Research more or Low priority.",
@@ -89,7 +94,14 @@ export function createEnglishOnlyProfileAnalysisSchema() {
         icebreaker: value.icebreaker,
         recommendedAction: value.recommendedAction,
         actionReason: value.actionReason,
+        actionRisks: value.actionRisks,
+        actionPrerequisites: value.actionPrerequisites,
+        actionExpiration: value.actionExpiration,
         recommendedNextAction: value.recommendedNextAction,
+        decisionConfidence: value.decisionConfidence,
+        dataSufficiency: value.dataSufficiency,
+        confidenceReason: value.confidenceReason,
+        limitedContextReasons: value.limitedContextReasons,
         positiveSignals: value.positiveSignals,
         negativeSignals: value.negativeSignals,
         missingInformation: value.missingInformation,
@@ -103,6 +115,11 @@ export function createEnglishOnlyProfileAnalysisSchema() {
           sourceSection: item.sourceSection,
           confidence: item.confidence
         })),
+        decisionBreakdown: value.decisionBreakdown,
+        decisionChangeConditions: value.decisionChangeConditions,
+        nextBestResearchActions: value.nextBestResearchActions,
+        outreachReadiness: value.outreachReadiness,
+        outreachCoach: value.outreachCoach,
         dmVariants: (value.dmVariants ?? []).map((variant) => ({
           label: variant.label,
           useCase: variant.useCase,
@@ -117,7 +134,15 @@ export function createEnglishOnlyProfileAnalysisSchema() {
       },
       context
     );
-  });
+  }).transform((value) => ({
+    ...value,
+    decisionConfidence: value.decisionConfidence ?? value.confidence,
+    dataSufficiency: value.dataSufficiency ?? "insufficient",
+    evidenceCoverage: value.evidenceCoverage ?? 0,
+    limitedContextReasons: value.limitedContextReasons ?? [],
+    actionRisks: value.actionRisks ?? [],
+    actionPrerequisites: value.actionPrerequisites ?? []
+  }));
 }
 
 export function createEnglishOnlyGeneratedDmSchema(maxLength: number) {

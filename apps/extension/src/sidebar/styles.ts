@@ -437,6 +437,76 @@ export const sidebarStyles = `
     line-height: 1.35;
   }
 
+  .lhai-disclosure {
+    display: grid;
+    gap: 9px;
+  }
+
+  .lhai-disclosure summary {
+    cursor: pointer;
+    color: #475569;
+    font-size: 11px;
+    line-height: 1.25;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .lhai-breakdown-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .lhai-breakdown-item {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    padding: 9px;
+  }
+
+  .lhai-breakdown-item strong {
+    color: #0f172a;
+    font-size: 12px;
+  }
+
+  .lhai-breakdown-strong {
+    background: #ecfdf5;
+    color: #166534;
+    border-color: #bbf7d0;
+  }
+
+  .lhai-breakdown-moderate {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+  }
+
+  .lhai-breakdown-weak,
+  .lhai-breakdown-missing {
+    background: #fffbeb;
+    color: #92400e;
+    border-color: #fde68a;
+  }
+
+  .lhai-breakdown-negative {
+    background: #fef2f2;
+    color: #991b1b;
+    border-color: #fecaca;
+  }
+
+  .lhai-comparison-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .lhai-comparison-grid > div {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    padding: 9px;
+  }
+
   .lhai-evidence-badge {
     flex: 0 0 auto;
     border-radius: 999px;

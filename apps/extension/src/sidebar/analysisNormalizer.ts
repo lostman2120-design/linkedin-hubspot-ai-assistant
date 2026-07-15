@@ -29,6 +29,24 @@ const scoreEvidenceSources = [
   "seller_context",
   "not_available"
 ] as const;
+const decisionBreakdownFields = [
+  "roleFit",
+  "industryFit",
+  "companyFit",
+  "buyerRelevance",
+  "painEvidence",
+  "timingSignal",
+  "relationshipSignal",
+  "dataSufficiency",
+  "riskLevel"
+] as const;
+const decisionBreakdownStatuses = ["strong", "moderate", "weak", "missing", "negative"] as const;
+const decisionBreakdownBases = ["fact", "inference", "mixed", "missing"] as const;
+const dataSufficiencyValues = ["sufficient", "partial", "insufficient"] as const;
+const readinessValues = ["ready", "almost_ready", "not_ready", "avoid"] as const;
+const timingRecommendations = ["Contact now", "Research first", "Wait for a stronger signal", "Do not contact yet"] as const;
+const researchPriorities = ["high", "medium", "low"] as const;
+const outreachCoachVerdicts = ["Send after review", "Research before sending", "Rewrite before sending", "Do not send yet"] as const;
 
 export function normalizeAnalysisResult(raw: unknown): ProfileAnalysis {
   const input = isRecord(raw) ? raw : {};
@@ -48,6 +66,9 @@ export function normalizeAnalysisResult(raw: unknown): ProfileAnalysis {
       "The visible evidence is not sufficient for a stronger sales decision.",
       700
     ),
+    actionRisks: normalizeStringArray(input.actionRisks, 3, 220),
+    actionPrerequisites: normalizeStringArray(input.actionPrerequisites, 3, 220),
+    actionExpiration: normalizeString(input.actionExpiration, "Re-evaluate after reviewing company context", 220),
     recommendedNextAction: normalizeString(input.recommendedNextAction, "", 500),
     positiveSignals: normalizeStringArray(input.positiveSignals, 8, 220),
     negativeSignals: normalizeStringArray(input.negativeSignals, 8, 220),
@@ -59,6 +80,16 @@ export function normalizeAnalysisResult(raw: unknown): ProfileAnalysis {
     outreachStrategy: normalizeOutreachStrategy(input.outreachStrategy, input),
     scoreEvidence: normalizeScoreEvidence(input.scoreEvidence),
     scoringMetadata: normalizeScoringMetadata(input.scoringMetadata, input.leadScore, input.fitLabel, confidence),
+    decisionConfidence: normalizeConfidence(input.decisionConfidence ?? input.confidence),
+    dataSufficiency: normalizeEnum(input.dataSufficiency, dataSufficiencyValues, "insufficient"),
+    evidenceCoverage: normalizeLeadScore(input.evidenceCoverage),
+    confidenceReason: normalizeString(input.confidenceReason, "Visible evidence is limited.", 500),
+    limitedContextReasons: normalizeStringArray(input.limitedContextReasons, 8, 220),
+    decisionBreakdown: normalizeDecisionBreakdown(input.decisionBreakdown),
+    decisionChangeConditions: normalizeDecisionChangeConditions(input.decisionChangeConditions),
+    nextBestResearchActions: normalizeNextBestResearchActions(input.nextBestResearchActions),
+    outreachReadiness: normalizeOutreachReadiness(input.outreachReadiness),
+    outreachCoach: normalizeOutreachCoach(input.outreachCoach),
     dmVariants: normalizeDmVariants(input.dmVariants)
   };
 }
@@ -149,7 +180,7 @@ function normalizeScoringMetadata(
   const finalScore = normalizeLeadScore(input.finalScore ?? leadScore);
 
   return {
-    scoringVersion: normalizeString(input.scoringVersion, "0.4.0", 40),
+    scoringVersion: normalizeString(input.scoringVersion, "0.5.0", 40),
     finalScore,
     fitLabel: normalizeString(fitLabel ?? input.fitLabel, "Not enough data", 80) as ScoringMetadata["fitLabel"],
     confidence: normalizeConfidence(input.confidence ?? confidence),
@@ -158,6 +189,107 @@ function normalizeScoringMetadata(
     missingCriteriaCount: normalizeNonNegativeCount(input.missingCriteriaCount),
     disqualifierCount: normalizeNonNegativeCount(input.disqualifierCount),
     analysisDepth: normalizeEnum(input.analysisDepth, ["limited", "standard", "deep"] as const, "limited")
+  };
+}
+
+function normalizeDecisionBreakdown(value: unknown): ProfileAnalysis["decisionBreakdown"] {
+  const input = isRecord(value) ? value : {};
+  const result = {} as ProfileAnalysis["decisionBreakdown"];
+
+  for (const field of decisionBreakdownFields) {
+    result[field] = normalizeDecisionBreakdownItem(input[field]);
+  }
+
+  return result;
+}
+
+function normalizeDecisionBreakdownItem(value: unknown): ProfileAnalysis["decisionBreakdown"]["roleFit"] {
+  const input = isRecord(value) ? value : {};
+  return {
+    status: normalizeEnum(input.status, decisionBreakdownStatuses, "missing"),
+    score: normalizeLeadScore(input.score),
+    explanation: normalizeString(input.explanation, "Not enough visible evidence is available yet.", 500),
+    evidence: normalizeStringArray(input.evidence, 5, 220),
+    source: normalizeString(input.source, "not_available", 120),
+    basis: normalizeEnum(input.basis, decisionBreakdownBases, "missing")
+  };
+}
+
+function normalizeDecisionChangeConditions(value: unknown): ProfileAnalysis["decisionChangeConditions"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .slice(0, 5)
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+
+      const condition = normalizeString(item.condition, "", 220);
+      if (!condition) {
+        return null;
+      }
+
+      return {
+        condition,
+        currentState: normalizeString(item.currentState, "Not confirmed", 220),
+        impactIfConfirmed: normalizeString(item.impactIfConfirmed, "Would change the sales decision.", 320),
+        recommendedActionIfConfirmed: normalizeRecommendedAction(item.recommendedActionIfConfirmed, 60)
+      };
+    })
+    .filter((item): item is ProfileAnalysis["decisionChangeConditions"][number] => Boolean(item));
+}
+
+function normalizeNextBestResearchActions(value: unknown): ProfileAnalysis["nextBestResearchActions"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .slice(0, 3)
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+
+      const action = normalizeString(item.action, "", 220);
+      if (!action) {
+        return null;
+      }
+
+      return {
+        priority: normalizeEnum(item.priority, researchPriorities, "medium"),
+        action,
+        reason: normalizeString(item.reason, "This would improve the sales decision.", 320),
+        expectedDecisionImpact: normalizeString(item.expectedDecisionImpact, "Could change the recommended action.", 320),
+        safeSourceSuggestion: normalizeString(item.safeSourceSuggestion, "Review visible or public information manually.", 220)
+      };
+    })
+    .filter((item): item is ProfileAnalysis["nextBestResearchActions"][number] => Boolean(item));
+}
+
+function normalizeOutreachReadiness(value: unknown): ProfileAnalysis["outreachReadiness"] {
+  const input = isRecord(value) ? value : {};
+  return {
+    readiness: normalizeEnum(input.readiness, readinessValues, "not_ready"),
+    readinessScore: normalizeLeadScore(input.readinessScore),
+    timingRecommendation: normalizeEnum(input.timingRecommendation, timingRecommendations, "Research first"),
+    reason: normalizeString(input.reason, "More visible evidence is needed before outreach.", 500),
+    blockers: normalizeStringArray(input.blockers, 6, 220),
+    prerequisites: normalizeStringArray(input.prerequisites, 6, 220)
+  };
+}
+
+function normalizeOutreachCoach(value: unknown): ProfileAnalysis["outreachCoach"] {
+  const input = isRecord(value) ? value : {};
+  return {
+    verdict: normalizeEnum(input.verdict, outreachCoachVerdicts, "Research before sending"),
+    message: normalizeString(input.message, "Review the evidence before sending any outreach.", 600),
+    mainWarning: normalizeString(input.mainWarning, "Do not send unsupported claims.", 400),
+    recommendedPreparation: normalizeString(input.recommendedPreparation, "Confirm the missing buying context first.", 400),
+    humanReviewRequired: true
   };
 }
 

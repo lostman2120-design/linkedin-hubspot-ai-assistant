@@ -1,6 +1,8 @@
 import type { z } from "zod";
 import type {
   ApiErrorResponseSchema,
+  DecisionBreakdownSchema,
+  DecisionChangeConditionSchema,
   DmVariantSchema,
   GeneratedDmSchema,
   HubSpotSyncResultSchema,
@@ -9,6 +11,9 @@ import type {
   LinkedInVisibleProfileContextSchema,
   LinkedInProfileSchema,
   OutreachStrategySchema,
+  NextBestResearchActionSchema,
+  OutreachCoachSchema,
+  OutreachReadinessSchema,
   ProfileAnalysisSchema,
   RecommendedActionSchema,
   ScoreEvidenceSchema,
@@ -23,6 +28,11 @@ export type LinkedInVisibleProfileContext = z.infer<typeof LinkedInVisibleProfil
 export type ProfileAnalysis = z.infer<typeof ProfileAnalysisSchema>;
 export type RecommendedAction = z.infer<typeof RecommendedActionSchema>;
 export type OutreachStrategy = z.infer<typeof OutreachStrategySchema>;
+export type DecisionBreakdown = z.infer<typeof DecisionBreakdownSchema>;
+export type DecisionChangeCondition = z.infer<typeof DecisionChangeConditionSchema>;
+export type NextBestResearchAction = z.infer<typeof NextBestResearchActionSchema>;
+export type OutreachReadiness = z.infer<typeof OutreachReadinessSchema>;
+export type OutreachCoach = z.infer<typeof OutreachCoachSchema>;
 export type DmVariant = z.infer<typeof DmVariantSchema>;
 export type GeneratedDm = z.infer<typeof GeneratedDmSchema>;
 export type SellerContext = z.infer<typeof SellerContextSchema>;

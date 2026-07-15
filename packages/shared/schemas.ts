@@ -123,7 +123,7 @@ export const ScoreEvidenceSchema = z.object({
 });
 
 export const ScoringMetadataSchema = z.object({
-  scoringVersion: z.string().trim().default("0.4.0"),
+  scoringVersion: z.string().trim().default("0.5.0"),
   finalScore: z.number().int().min(0).max(100).default(0),
   fitLabel: z.enum(["Strong fit", "Possible fit", "Weak fit", "Not enough data"]).default("Not enough data"),
   confidence: ConfidenceSchema.default("low"),
@@ -142,6 +142,97 @@ export const OutreachStrategySchema = z.object({
   painHypothesis: readableString.max(700),
   whatToAvoid: readableString.max(700),
   suggestedCTA: readableString.max(400)
+});
+
+const DecisionBreakdownStatusSchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  z.enum(["strong", "moderate", "weak", "missing", "negative"])
+);
+
+const DecisionBreakdownBasisSchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  z.enum(["fact", "inference", "mixed", "missing"])
+);
+
+const DataSufficiencySchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  z.enum(["sufficient", "partial", "insufficient"])
+);
+
+const OutreachReadinessSchemaValue = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, "_") : value),
+  z.enum(["ready", "almost_ready", "not_ready", "avoid"])
+);
+
+const TimingRecommendationSchema = z.enum(["Contact now", "Research first", "Wait for a stronger signal", "Do not contact yet"]);
+
+const ResearchPrioritySchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  z.enum(["high", "medium", "low"])
+);
+
+const OutreachCoachVerdictSchema = z.enum(["Send after review", "Research before sending", "Rewrite before sending", "Do not send yet"]);
+
+const DecisionBreakdownItemSchema = z.object({
+  status: DecisionBreakdownStatusSchema.default("missing"),
+  score: z.number().int().min(0).max(100).default(0),
+  explanation: z.string().trim().min(1).max(500).default("Not enough visible evidence is available yet."),
+  evidence: z.array(z.string().trim().min(1).max(220)).max(5).default([]),
+  source: z.string().trim().min(1).max(120).default("not_available"),
+  basis: DecisionBreakdownBasisSchema.default("missing")
+});
+
+const fallbackDecisionBreakdownItem = {
+  status: "missing" as const,
+  score: 0,
+  explanation: "Not enough visible evidence is available yet.",
+  evidence: [],
+  source: "not_available",
+  basis: "missing" as const
+};
+
+export const DecisionBreakdownSchema = z.object({
+  roleFit: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  industryFit: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  companyFit: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  buyerRelevance: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  painEvidence: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  timingSignal: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  relationshipSignal: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  dataSufficiency: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem),
+  riskLevel: DecisionBreakdownItemSchema.default(fallbackDecisionBreakdownItem)
+});
+
+export const DecisionChangeConditionSchema = z.object({
+  condition: readableString.max(220),
+  currentState: readableString.max(220),
+  impactIfConfirmed: readableString.max(320),
+  recommendedActionIfConfirmed: RecommendedActionSchema
+});
+
+export const NextBestResearchActionSchema = z.object({
+  priority: ResearchPrioritySchema.default("medium"),
+  action: readableString.max(220),
+  reason: readableString.max(320),
+  expectedDecisionImpact: readableString.max(320),
+  safeSourceSuggestion: readableString.max(220)
+});
+
+export const OutreachReadinessSchema = z.object({
+  readiness: OutreachReadinessSchemaValue.default("not_ready"),
+  readinessScore: z.number().int().min(0).max(100).default(0),
+  timingRecommendation: TimingRecommendationSchema.default("Research first"),
+  reason: readableString.max(500).default("More visible evidence is needed before outreach."),
+  blockers: z.array(z.string().trim().min(1).max(220)).max(6).default([]),
+  prerequisites: z.array(z.string().trim().min(1).max(220)).max(6).default([])
+});
+
+export const OutreachCoachSchema = z.object({
+  verdict: OutreachCoachVerdictSchema.default("Research before sending"),
+  message: readableString.max(600).default("Review the evidence before sending any outreach."),
+  mainWarning: readableString.max(400).default("Do not send unsupported claims."),
+  recommendedPreparation: readableString.max(400).default("Confirm the missing buying context first."),
+  humanReviewRequired: z.literal(true).default(true)
 });
 
 export function recommendedActionForScore(leadScore: number): (typeof RECOMMENDED_ACTIONS)[number] {
@@ -292,8 +383,16 @@ export const ProfileAnalysisSchema = z
     icebreaker: readableString,
     recommendedAction: z.unknown().optional(),
     actionReason: z.string().trim().default("The visible evidence is not sufficient for a stronger sales decision."),
+    actionRisks: z.array(z.string().trim().min(1)).max(3).default([]),
+    actionPrerequisites: z.array(z.string().trim().min(1)).max(3).default([]),
+    actionExpiration: z.string().trim().default("Re-evaluate after reviewing company context"),
     recommendedNextAction: z.string().trim().default("Review the profile and decide whether to reach out."),
     confidence: ConfidenceSchema,
+    decisionConfidence: ConfidenceSchema.optional(),
+    dataSufficiency: DataSufficiencySchema.default("insufficient"),
+    evidenceCoverage: z.number().int().min(0).max(100).default(0),
+    confidenceReason: z.string().trim().default("Visible evidence is limited."),
+    limitedContextReasons: z.array(z.string().trim().min(1)).max(8).default([]),
     positiveSignals: z.array(z.string().trim().min(1)).max(8).default([]),
     negativeSignals: z.array(z.string().trim().min(1)).max(8).default([]),
     missingInformation: z.array(z.string().trim().min(1)).max(8).default([]),
@@ -304,11 +403,17 @@ export const ProfileAnalysisSchema = z
     outreachStrategy: z.unknown().optional(),
     scoreEvidence: z.array(ScoreEvidenceSchema).max(20).default([]),
     scoringMetadata: ScoringMetadataSchema.default({}),
+    decisionBreakdown: DecisionBreakdownSchema.default({}),
+    decisionChangeConditions: z.array(DecisionChangeConditionSchema).max(5).default([]),
+    nextBestResearchActions: z.array(NextBestResearchActionSchema).max(3).default([]),
+    outreachReadiness: OutreachReadinessSchema.default({}),
+    outreachCoach: OutreachCoachSchema.default({}),
     dmVariants: z.array(DmVariantSchema).max(3).default([])
   })
   .transform((value) => ({
     ...value,
     recommendedAction: normalizeRecommendedAction(value.recommendedAction, value.leadScore),
+    decisionConfidence: value.decisionConfidence ?? value.confidence,
     outreachStrategy: normalizeOutreachStrategy(value.outreachStrategy, value)
   }));
 

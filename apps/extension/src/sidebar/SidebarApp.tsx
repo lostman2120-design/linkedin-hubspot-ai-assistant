@@ -26,9 +26,12 @@ import {
   LICENSE_STATE_KEY,
   SETTINGS_KEY,
   getDailyUsage,
+  getPreviousDecisionSnapshot,
   getStoredLicenseState,
   incrementDailyUsage,
+  saveDecisionSnapshot,
   type DailyUsage,
+  type DecisionComparison,
   type StoredLicenseState
 } from "../storage";
 import { PROFILE_URL_CHANGED_EVENT } from "../urlEvents";
@@ -114,7 +117,8 @@ function titleCaseConfidence(value: string | undefined): string {
     return "Not analyzed";
   }
 
-  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+  const cleaned = value.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function compactSnippet(value: string | undefined, fallback: string): string {
@@ -170,6 +174,19 @@ function evidenceGroup(items: ScoreEvidence[], signalType: ScoreEvidence["signal
   return items.filter((item) => item.signalType === signalType && (!basis || item.basis === basis));
 }
 
+function decisionChangeSummary(comparison: DecisionComparison): string {
+  if (comparison.previous.recommendedAction !== comparison.current.recommendedAction) {
+    return `Recommended Action changed from ${comparison.previous.recommendedAction} to ${comparison.current.recommendedAction}.`;
+  }
+
+  const delta = comparison.current.leadScore - comparison.previous.leadScore;
+  if (Math.abs(delta) >= 10) {
+    return `Score changed by ${delta > 0 ? "+" : ""}${delta} points.`;
+  }
+
+  return comparison.current.actionReason || "Decision metadata changed slightly after re-analysis.";
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
@@ -222,6 +239,67 @@ function EvidenceGroup({ title, items, inference = false }: { title: string; ite
   );
 }
 
+function DecisionBreakdownPanel({ analysis }: { analysis: ProfileAnalysis }) {
+  const rows: Array<[keyof ProfileAnalysis["decisionBreakdown"], string]> = [
+    ["roleFit", "Role fit"],
+    ["industryFit", "Industry fit"],
+    ["companyFit", "Company fit"],
+    ["buyerRelevance", "Buyer relevance"],
+    ["painEvidence", "Pain evidence"],
+    ["timingSignal", "Timing signal"],
+    ["relationshipSignal", "Relationship signal"],
+    ["dataSufficiency", "Data sufficiency"],
+    ["riskLevel", "Risk level"]
+  ];
+
+  return (
+    <details className="lhai-disclosure" open>
+      <summary>Decision Breakdown</summary>
+      <div className="lhai-breakdown-list">
+        {rows.map(([key, label]) => {
+          const item = analysis.decisionBreakdown[key];
+          return (
+            <article className="lhai-breakdown-item" key={key}>
+              <div className="lhai-section-heading">
+                <strong>{label}</strong>
+                <span className={`lhai-pill lhai-breakdown-${item.status}`}>{titleCaseConfidence(item.status)} - {item.score}</span>
+              </div>
+              <p className="lhai-value">{item.explanation}</p>
+              {item.evidence.length ? <p className="lhai-value lhai-muted">Evidence: {item.evidence.slice(0, 2).join("; ")}</p> : null}
+              <p className="lhai-value lhai-muted">Source: {item.source.replace(/_/g, " ")} · Basis: {titleCaseConfidence(item.basis)}</p>
+            </article>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+function DecisionComparisonCard({ comparison }: { comparison: DecisionComparison | null }) {
+  if (!comparison) {
+    return null;
+  }
+
+  return (
+    <section className="lhai-section lhai-card">
+      <span className="lhai-label">Previous Decision comparison</span>
+      <div className="lhai-comparison-grid">
+        <div>
+          <span className="lhai-label">Previous</span>
+          <p className="lhai-value">Score {comparison.previous.leadScore} - {comparison.previous.recommendedAction}</p>
+          <p className="lhai-value lhai-muted">{new Date(comparison.previous.analyzedAt).toLocaleString()}</p>
+        </div>
+        <div>
+          <span className="lhai-label">Current</span>
+          <p className="lhai-value">Score {comparison.current.leadScore} - {comparison.current.recommendedAction}</p>
+          <p className="lhai-value lhai-muted">{new Date(comparison.current.analyzedAt).toLocaleString()}</p>
+        </div>
+      </div>
+      <p className="lhai-value lhai-muted">Why it changed: {comparison.mainChangeReason}</p>
+    </section>
+  );
+}
+
 function UpgradeCallout() {
   return (
     <div className="lhai-upgrade-callout">
@@ -264,6 +342,7 @@ export function SidebarApp() {
   const [localActionStatus, setLocalActionStatus] = useState<LocalActionStatus | null>(null);
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
   const [lastAnalyzedProfileUrl, setLastAnalyzedProfileUrl] = useState<string | null>(null);
+  const [decisionComparison, setDecisionComparison] = useState<DecisionComparison | null>(null);
   const activeProfileUrlRef = useRef<string | null>(null);
   const analysisRequestIdRef = useRef(0);
   const dmRequestIdRef = useRef(0);
@@ -487,6 +566,7 @@ export function SidebarApp() {
     setMessage(null);
     setLocalActionStatus(null);
     setUpgradeMessage(null);
+    setDecisionComparison(null);
     setStatus("idle");
     setNextAction(DEFAULT_NEXT_ACTION);
   }
@@ -593,6 +673,22 @@ export function SidebarApp() {
 
       if (activeProfileUrlRef.current !== profileUrl || analysisRequestIdRef.current !== requestId) {
         return;
+      }
+
+      const previousDecision = await getPreviousDecisionSnapshot(profileUrl).catch(() => null);
+      const currentDecision = await saveDecisionSnapshot(profileUrl, normalizedResult).catch(() => null);
+      if (previousDecision && currentDecision) {
+        const comparison = {
+          previous: previousDecision,
+          current: currentDecision,
+          mainChangeReason: ""
+        };
+        setDecisionComparison({
+          ...comparison,
+          mainChangeReason: decisionChangeSummary(comparison)
+        });
+      } else {
+        setDecisionComparison(null);
       }
 
       setAnalysis(normalizedResult);
@@ -944,6 +1040,105 @@ export function SidebarApp() {
           )}
         </section>
 
+        {renderedAnalysis ? (
+          <>
+            <section className="lhai-section lhai-card">
+              <div className="lhai-section-heading">
+                <span className="lhai-label">Outreach Readiness</span>
+                <span className="lhai-pill">{titleCaseConfidence(renderedAnalysis.outreachReadiness.readiness)}</span>
+              </div>
+              <p className="lhai-value">
+                Timing: <strong>{renderedAnalysis.outreachReadiness.timingRecommendation}</strong>
+              </p>
+              <p className="lhai-value lhai-muted">{renderedAnalysis.outreachReadiness.reason}</p>
+              {renderedAnalysis.outreachReadiness.blockers.length ? (
+                <>
+                  <span className="lhai-label">Blockers</span>
+                  <ul className="lhai-list">
+                    {renderedAnalysis.outreachReadiness.blockers.slice(0, 4).map((blocker) => (
+                      <li key={blocker}>{blocker}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </section>
+
+            <section className="lhai-section lhai-card">
+              <div className="lhai-grid">
+                <div className="lhai-metric">
+                  <span className="lhai-label">ICP Fit Score</span>
+                  <span className={`lhai-score${renderedAnalysis.dataSufficiency === "insufficient" ? " lhai-score-unknown" : ""}`}>
+                    {renderedAnalysis.dataSufficiency === "insufficient" ? "Not enough data" : renderedAnalysis.leadScore}
+                  </span>
+                  <span className="lhai-score-subtext">{renderedAnalysis.fitLabel}</span>
+                </div>
+                <div className="lhai-metric">
+                  <span className="lhai-label">Decision Confidence</span>
+                  <p className="lhai-value">{titleCaseConfidence(renderedAnalysis.decisionConfidence)}</p>
+                  <p className="lhai-value lhai-muted">Evidence coverage: {renderedAnalysis.evidenceCoverage}%</p>
+                  <p className="lhai-value lhai-muted">Data sufficiency: {titleCaseConfidence(renderedAnalysis.dataSufficiency)}</p>
+                </div>
+              </div>
+              <p className="lhai-value lhai-muted">{renderedAnalysis.confidenceReason}</p>
+              {renderedAnalysis.limitedContextReasons.length ? (
+                <p className="lhai-value lhai-muted">Limited context: {renderedAnalysis.limitedContextReasons.slice(0, 3).join("; ")}</p>
+              ) : null}
+            </section>
+
+            <section className="lhai-section lhai-card">
+              <span className="lhai-label">Action Reason / Risks / Prerequisites</span>
+              <p className="lhai-value">{renderedAnalysis.actionReason}</p>
+              {renderedAnalysis.actionRisks.length ? (
+                <p className="lhai-value lhai-muted">Risks: {renderedAnalysis.actionRisks.join("; ")}</p>
+              ) : null}
+              {renderedAnalysis.actionPrerequisites.length ? (
+                <p className="lhai-value lhai-muted">Prerequisites: {renderedAnalysis.actionPrerequisites.join("; ")}</p>
+              ) : null}
+              <p className="lhai-value lhai-muted">Re-evaluate: {renderedAnalysis.actionExpiration}</p>
+            </section>
+
+            <section className="lhai-section lhai-card">
+              <DecisionBreakdownPanel analysis={renderedAnalysis} />
+            </section>
+
+            <section className="lhai-section lhai-card">
+              <span className="lhai-label">What would change this decision?</span>
+              {renderedAnalysis.decisionChangeConditions.length ? (
+                <div className="lhai-strategy-list">
+                  {renderedAnalysis.decisionChangeConditions.map((condition) => (
+                    <div className="lhai-strategy-field" key={condition.condition}>
+                      <p className="lhai-value"><strong>{condition.condition}</strong></p>
+                      <p className="lhai-value lhai-muted">Current state: {condition.currentState}</p>
+                      <p className="lhai-value lhai-muted">If confirmed: {condition.impactIfConfirmed}</p>
+                      <p className="lhai-value lhai-muted">Possible action: {condition.recommendedActionIfConfirmed}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="lhai-value lhai-muted">No specific decision-change condition was identified.</p>
+              )}
+            </section>
+
+            <section className="lhai-section lhai-card">
+              <span className="lhai-label">Next Best Research Action</span>
+              {renderedAnalysis.nextBestResearchActions.length ? (
+                <div className="lhai-strategy-list">
+                  {renderedAnalysis.nextBestResearchActions.map((action) => (
+                    <div className="lhai-strategy-field" key={action.action}>
+                      <p className="lhai-value"><strong>{titleCaseConfidence(action.priority)}:</strong> {action.action}</p>
+                      <p className="lhai-value lhai-muted">Why: {action.reason}</p>
+                      <p className="lhai-value lhai-muted">Impact: {action.expectedDecisionImpact}</p>
+                      <p className="lhai-value lhai-muted">Safe source: {action.safeSourceSuggestion}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="lhai-value lhai-muted">No extra research action is required by the current decision.</p>
+              )}
+            </section>
+          </>
+        ) : null}
+
         <section className="lhai-section lhai-card">
           <div className="lhai-section-heading">
             <span className="lhai-label">Profile</span>
@@ -1155,6 +1350,19 @@ export function SidebarApp() {
           {whatToAvoid.length ? <p className="lhai-value lhai-muted">Additional cautions: {whatToAvoid.join("; ")}</p> : null}
         </section>
 
+        {renderedAnalysis ? (
+          <section className="lhai-section lhai-card">
+            <div className="lhai-section-heading">
+              <span className="lhai-label">AI Outreach Coach</span>
+              <span className="lhai-pill">{renderedAnalysis.outreachCoach.verdict}</span>
+            </div>
+            <p className="lhai-value">{renderedAnalysis.outreachCoach.message}</p>
+            <p className="lhai-value lhai-muted">Warning: {renderedAnalysis.outreachCoach.mainWarning}</p>
+            <p className="lhai-value lhai-muted">Preparation: {renderedAnalysis.outreachCoach.recommendedPreparation}</p>
+            <p className="lhai-value lhai-muted">Human review required: Yes</p>
+          </section>
+        ) : null}
+
         <section className="lhai-section lhai-card lhai-dm-section">
           <div className="lhai-section-heading">
             <span className="lhai-label">DM Drafts</span>
@@ -1272,6 +1480,7 @@ export function SidebarApp() {
           ) : null}
           {upgradeMessage && localActionStatus?.message === upgradeMessage ? <UpgradeCallout /> : null}
         </section>
+        <DecisionComparisonCard comparison={decisionComparison} />
       </div>
     </aside>
   );

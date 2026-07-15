@@ -90,6 +90,63 @@ describe("OpenAI analysis response normalization", () => {
     expect(parsed.dmVariants.every((variant) => Array.isArray(variant.offerContextUsed))).toBe(true);
   });
 
+  it("normalizes harmless v0.5 decision intelligence field aliases before validation", () => {
+    const schema = createEnglishOnlyProfileAnalysisSchema();
+    const response = {
+      ...buildAnalysisResponseWithValidVariantLists(),
+      decisionConfidence: "MEDIUM",
+      dataSufficiency: "PARTIAL",
+      actionRisks: true,
+      actionPrerequisites: null,
+      limitedContextReasons: ["Company size missing", 123],
+      decisionBreakdown: {
+        roleFit: {
+          status: "STRONG",
+          score: 90,
+          explanation: "Visible role match.",
+          evidence: ["HubSpot Consultant", false],
+          source: "headline",
+          basis: "FACT"
+        }
+      },
+      outreachReadiness: {
+        readiness: "almost ready",
+        readinessScore: 72,
+        timingRecommendation: "research first",
+        reason: "Research before outreach.",
+        blockers: true,
+        prerequisites: ["Confirm HubSpot usage"]
+      },
+      outreachCoach: {
+        verdict: "research before sending",
+        message: "Review first.",
+        mainWarning: "Do not assume pain.",
+        recommendedPreparation: "Confirm workflow context.",
+        humanReviewRequired: false
+      }
+    };
+
+    const normalized = normalizeAnalysisResponseForSchema(response) as Record<string, unknown>;
+    const parsed = schema.parse(normalized);
+
+    expect(normalized.dataSufficiency).toBe("partial");
+    expect(parsed.decisionConfidence).toBe("medium");
+    expect(["partial", "insufficient"]).toContain(parsed.dataSufficiency);
+    expect(normalized.limitedContextReasons).toEqual(["Company size missing"]);
+    expect(parsed.actionRisks).toEqual([]);
+    expect(parsed.actionPrerequisites).toEqual([]);
+    expect([["Company size missing"], []]).toContainEqual(parsed.limitedContextReasons);
+    expect((normalized.decisionBreakdown as { roleFit: { status: string; basis: string } }).roleFit.status).toBe("strong");
+    expect((normalized.decisionBreakdown as { roleFit: { status: string; basis: string } }).roleFit.basis).toBe("fact");
+    expect((normalized.outreachReadiness as { readiness: string; blockers: string[] }).readiness).toBe("almost_ready");
+    expect((normalized.outreachReadiness as { readiness: string; blockers: string[] }).blockers).toEqual([]);
+    expect((normalized.outreachCoach as { verdict: string; humanReviewRequired: boolean }).verdict).toBe("Research before sending");
+    expect((normalized.outreachCoach as { verdict: string; humanReviewRequired: boolean }).humanReviewRequired).toBe(true);
+    if (parsed.decisionBreakdown) {
+      expect(parsed.decisionBreakdown.roleFit.status).toBe("strong");
+    }
+  });
+
   it("does not trigger the retry request for the known boolean-versus-array response shape", async () => {
     vi.stubEnv("OPENAI_API_KEY", "sk-test-key");
     const fetchMock = vi.fn().mockResolvedValue({
@@ -201,6 +258,71 @@ describe("OpenAI analysis response normalization", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(analysis.dmVariants[1]?.label).toBe("Direct value pitch");
+  });
+
+  it("does not trigger the retry request for normalized v0.5 decision intelligence aliases", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test-key");
+    const responseWithAliases = {
+      ...buildAnalysisResponseWithValidVariantLists(),
+      decisionConfidence: "MEDIUM",
+      dataSufficiency: "PARTIAL",
+      decisionBreakdown: {
+        roleFit: {
+          status: "STRONG",
+          score: 90,
+          explanation: "Visible role match.",
+          evidence: ["HubSpot Consultant"],
+          source: "headline",
+          basis: "FACT"
+        }
+      },
+      outreachReadiness: {
+        readiness: "almost ready",
+        readinessScore: 72,
+        timingRecommendation: "research first",
+        reason: "Research first.",
+        blockers: false,
+        prerequisites: ["Confirm HubSpot usage"]
+      },
+      outreachCoach: {
+        verdict: "research before sending",
+        message: "Review first.",
+        mainWarning: "Do not assume pain.",
+        recommendedPreparation: "Confirm workflow context.",
+        humanReviewRequired: false
+      }
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify(responseWithAliases)
+              }
+            }
+          ]
+        })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const analysis = await new OpenAiService().analyzeProfile(
+      {
+        fullName: "Avery Johnson",
+        firstName: "Avery",
+        lastName: "Johnson",
+        headline: "VP Sales at Example Corp",
+        companyName: "Example Corp",
+        profileUrl: "https://www.linkedin.com/in/avery-johnson/"
+      },
+      DEFAULT_USER_SETTINGS
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(analysis.outreachCoach.humanReviewRequired).toBe(true);
   });
 });
 

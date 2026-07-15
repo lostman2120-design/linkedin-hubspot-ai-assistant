@@ -134,14 +134,16 @@ describe("mapProfileToHubSpotProperties", () => {
     );
   });
 
-  it("maps v0.4 lead decision fields to LHA HubSpot custom properties", () => {
-    expect(buildLhaPropertyValues(analysis, "2026-07-01T00:00:00.000Z")).toEqual({
+  it("maps v0.5 lead decision fields to LHA HubSpot custom properties", () => {
+    expect(buildLhaPropertyValues(analysis, "2026-07-01T00:00:00.000Z")).toMatchObject({
       lha_icp_fit_score: "84",
       lha_icp_fit_label: "Strong fit",
       lha_recommended_action: "Pursue now",
       lha_confidence: "100",
+      lha_decision_confidence: "high",
       lha_outreach_angle: "CRM hygiene and seller productivity",
       lha_main_reason: "The visible sales leadership role matches the saved ICP.",
+      lha_action_reason: "The visible sales leadership role matches the saved ICP.",
       lha_main_risk: "Do not assume the prospect already uses HubSpot.",
       lha_last_analyzed_at: "2026-07-01T00:00:00.000Z",
       lha_source: "LinkedIn"
@@ -216,6 +218,11 @@ describe("mapProfileToHubSpotProperties", () => {
     expect(noteBody).toContain("ICP Fit Label:</strong> Strong fit");
     expect(noteBody).toContain("Recommended Action");
     expect(noteBody).toContain("Pursue now");
+    expect(noteBody).toContain("Decision confidence");
+    expect(noteBody).toContain("Decision Breakdown");
+    expect(noteBody).toContain("Outreach Readiness");
+    expect(noteBody).toContain("Next Best Research Action");
+    expect(noteBody).toContain("AI Outreach Coach");
     expect(noteBody).toContain("Outreach Strategy");
     expect(noteBody).toContain("Why relevant");
     expect(noteBody).toContain("Best angle");
@@ -223,11 +230,11 @@ describe("mapProfileToHubSpotProperties", () => {
     expect(noteBody).toContain("What to avoid");
     expect(noteBody).toContain("Suggested CTA");
     expect(noteBody).toContain("Founder-led B2B SaaS buyer");
-    expect(noteBody).toContain("Manual CRM updates");
+    expect(noteBody).toContain("Manual LinkedIn research may be difficult to preserve in CRM.");
     expect(noteBody).toContain("Feedback request");
     expect(noteBody).toContain("DM Drafts");
     expect(noteBody).toContain("Suggested DM");
-    expect(noteBody).toContain("Tool:</strong> LinkedIn to HubSpot AI Assistant v0.4.0");
+    expect(noteBody).toContain("Tool:</strong> LinkedIn to HubSpot AI Assistant v0.5.0");
     expect(noteBody).not.toContain("<strong>Next action:");
   });
 

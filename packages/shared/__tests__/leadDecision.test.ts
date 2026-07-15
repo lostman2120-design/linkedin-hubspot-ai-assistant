@@ -6,7 +6,7 @@ import {
   normalizeRecommendedAction
 } from "../index.js";
 
-describe("v0.4 lead decision schema", () => {
+describe("v0.5 lead decision schema", () => {
   it("validates only the four supported recommended actions", () => {
     expect(RecommendedActionSchema.parse("Pursue now")).toBe("Pursue now");
     expect(RecommendedActionSchema.safeParse("Send a DM").success).toBe(false);
@@ -39,7 +39,7 @@ describe("v0.4 lead decision schema", () => {
     expect(strategy.bestAngle).toBe("CRM hygiene and seller productivity");
   });
 
-  it("keeps a valid v0.3 response working with safe v0.4 fallbacks", () => {
+  it("keeps a valid v0.3 response working with safe v0.5 fallbacks", () => {
     const analysis = ProfileAnalysisSchema.parse({
       leadScore: 62,
       persona: "Revenue operations leader",
@@ -59,5 +59,67 @@ describe("v0.4 lead decision schema", () => {
       painHypothesis: "Keeping CRM context complete",
       whatToAvoid: "Do not assume HubSpot usage"
     });
+  });
+
+  it("accepts v0.5 decision intelligence fields and falls back safely when they are missing", () => {
+    const analysis = ProfileAnalysisSchema.parse({
+      leadScore: 65,
+      persona: "RevOps consultant",
+      painPoints: ["CRM workflow quality"],
+      icebreaker: "Noticed your RevOps work.",
+      recommendedAction: "Research more",
+      confidence: "medium",
+      decisionBreakdown: {
+        roleFit: {
+          status: "STRONG",
+          score: 90,
+          explanation: "Visible title matches HubSpot Consultant.",
+          evidence: ["HubSpot Consultant"],
+          source: "headline",
+          basis: "FACT"
+        }
+      },
+      decisionChangeConditions: [
+        {
+          condition: "Uses HubSpot internally",
+          currentState: "Not confirmed",
+          impactIfConfirmed: "Buyer relevance would increase.",
+          recommendedActionIfConfirmed: "Pursue now"
+        }
+      ],
+      nextBestResearchActions: [
+        {
+          priority: "HIGH",
+          action: "Confirm HubSpot usage.",
+          reason: "This affects buyer relevance.",
+          expectedDecisionImpact: "Could move the decision to Pursue now.",
+          safeSourceSuggestion: "Review the visible About section"
+        }
+      ],
+      outreachReadiness: {
+        readiness: "almost ready",
+        readinessScore: 72,
+        timingRecommendation: "Research first",
+        reason: "Strong relevance but direct pain is not confirmed.",
+        blockers: ["No direct pain evidence"],
+        prerequisites: ["Confirm HubSpot usage"]
+      },
+      outreachCoach: {
+        verdict: "Research before sending",
+        message: "Review before outreach.",
+        mainWarning: "Do not assume pain.",
+        recommendedPreparation: "Confirm workflow context.",
+        humanReviewRequired: true
+      }
+    });
+
+    expect(analysis.decisionConfidence).toBe("medium");
+    expect(analysis.decisionBreakdown.roleFit.status).toBe("strong");
+    expect(analysis.decisionBreakdown.roleFit.basis).toBe("fact");
+    expect(analysis.decisionBreakdown.companyFit.status).toBe("missing");
+    expect(analysis.decisionChangeConditions).toHaveLength(1);
+    expect(analysis.nextBestResearchActions[0]?.priority).toBe("high");
+    expect(analysis.outreachReadiness.readiness).toBe("almost_ready");
+    expect(analysis.outreachCoach.humanReviewRequired).toBe(true);
   });
 });
