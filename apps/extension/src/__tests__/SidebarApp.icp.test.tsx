@@ -145,7 +145,11 @@ describe("Sidebar ICP summary panel", () => {
 
   it("renders v0.5 decision intelligence sections after analysis", async () => {
     sendMessage.mockImplementation((message: unknown, callback?: (response: { ok: boolean; data?: unknown }) => void) => {
-      if (typeof message === "object" && message !== null && (message as { endpoint?: string }).endpoint === "/ai/analyze-profile") {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        ["/ai/analyze-profile/quick", "/ai/analyze-profile/enrich"].includes((message as { endpoint?: string }).endpoint ?? "")
+      ) {
         callback?.({
           ok: true,
           data: {

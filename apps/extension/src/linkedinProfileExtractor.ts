@@ -230,6 +230,7 @@ function buildLinkedInProfile(): ExtractionResult {
   }
 
   const rawCompanyName = pickFirstReliableCompanyValue([
+    ...companyCandidatesFromTopCard(),
     ...candidatesFromSelectors(
       [
         "main [data-view-name='profile-top-card'] button[aria-label*='Current company'] span",
@@ -574,7 +575,8 @@ function profileHeaderContainers(): Array<{ selector: string; element: HTMLEleme
     "main [data-view-name='profile-top-card']",
     "main section:first-of-type",
     "main .pv-top-card",
-    ".pv-text-details__left-panel"
+    ".pv-text-details__left-panel",
+    ".pv-text-details__right-panel"
   ];
 
   const containers: Array<{ selector: string; element: HTMLElement }> = [];
@@ -613,6 +615,51 @@ function headlineLineCandidatesNearName(): TextCandidate[] {
     lines.forEach((line, index) => {
       candidates.push({ source: `top-card headline line ${index + 1}: ${container.selector}`, value: line });
     });
+  }
+
+  return uniqueCandidates(candidates);
+}
+
+function companyCandidatesFromTopCard(): TextCandidate[] {
+  const candidates: TextCandidate[] = [];
+
+  for (const container of profileHeaderContainers()) {
+    const companyElements = Array.from(
+      container.element.querySelectorAll(
+        [
+          "a[href*='/company/']",
+          "button[aria-label*='Current company']",
+          "button[aria-label*='current company']",
+          "[aria-label*='Current company']",
+          "[aria-label*='current company']",
+          "[data-field='experience_company_logo']",
+          ".pv-text-details__right-panel a",
+          ".pv-text-details__right-panel button"
+        ].join(",")
+      )
+    ).slice(0, MAX_CANDIDATES_PER_SOURCE);
+
+    for (const element of companyElements) {
+      if (!isVisibleElement(element)) {
+        continue;
+      }
+
+      const ariaLabel = cleanCompanyField(element.getAttribute("aria-label") ?? undefined);
+      if (ariaLabel) {
+        candidates.push({
+          source: `profile-top-card current company aria-label: ${container.selector}`,
+          value: ariaLabel
+        });
+      }
+
+      const visibleText = cleanCompanyField(visibleTextForElement(element));
+      if (visibleText) {
+        candidates.push({
+          source: `profile-top-card current company text: ${container.selector}`,
+          value: visibleText
+        });
+      }
+    }
   }
 
   return uniqueCandidates(candidates);

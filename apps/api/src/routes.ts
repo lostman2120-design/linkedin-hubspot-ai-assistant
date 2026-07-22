@@ -7,6 +7,7 @@ import {
   CreateNoteRequestSchema,
   GenerateDmRequestSchema,
   LicenseVerifyRequestSchema,
+  ProfileAnalysisSchema,
   UpsertContactRequestSchema,
   compactLinkedInProfile,
   validateLinkedInProfileIdentity
@@ -46,6 +47,11 @@ const AdminLicenseResendRequestSchema = z
     email: z.string().email().optional()
   })
   .refine((value) => Boolean(value.licenseKey || value.email), "Provide a licenseKey or email.");
+const EnrichProfileRequestSchema = z.object({
+  profile: AnalyzeProfileRequestSchema.shape.profile,
+  analysis: ProfileAnalysisSchema,
+  userSettings: AnalyzeProfileRequestSchema.shape.userSettings
+});
 
 function asyncHandler(handler: (req: Request, res: Response) => Promise<void>): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -128,6 +134,24 @@ router.post(
     const { profile, userSettings } = AnalyzeProfileRequestSchema.parse(compactProfileRequestBody(req.body));
     const analysis = await openAiService.analyzeProfile(profile, userSettings);
     res.json(analysis);
+  })
+);
+
+router.post(
+  "/ai/analyze-profile/quick",
+  asyncHandler(async (req, res) => {
+    const { profile, userSettings } = AnalyzeProfileRequestSchema.parse(compactProfileRequestBody(req.body));
+    const analysis = openAiService.quickAnalyzeProfile(profile, userSettings);
+    res.json(analysis);
+  })
+);
+
+router.post(
+  "/ai/analyze-profile/enrich",
+  asyncHandler(async (req, res) => {
+    const { profile, analysis, userSettings } = EnrichProfileRequestSchema.parse(compactProfileRequestBody(req.body));
+    const enrichedAnalysis = await openAiService.enrichProfileAnalysis(profile, analysis, userSettings);
+    res.json(enrichedAnalysis);
   })
 );
 

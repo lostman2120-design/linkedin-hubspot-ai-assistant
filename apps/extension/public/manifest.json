@@ -3,7 +3,7 @@
   "name": "LinkedIn to HubSpot AI Assistant",
   "version": "0.5.0",
   "description": "Analyze visible LinkedIn profile details, draft outreach, and save CRM updates to HubSpot.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage"],
   "host_permissions": [
     "https://www.linkedin.com/*",
     "https://*.linkedin.com/*",

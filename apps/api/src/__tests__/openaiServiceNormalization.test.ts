@@ -272,9 +272,8 @@ describe("OpenAI analysis response normalization", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(analysis.dmVariants).toHaveLength(3);
-    expect(analysis.dmVariants[0]?.personalizationUsed).toEqual([]);
-    expect(analysis.dmVariants[0]?.offerContextUsed).toEqual([]);
+    expect(analysis.dmVariants).toEqual([]);
+    expect(analysis.leadScore).toBeGreaterThanOrEqual(0);
   });
 
   it("keeps a normal complete response working without a retry request", async () => {
@@ -309,8 +308,8 @@ describe("OpenAI analysis response normalization", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(analysis.dmVariants[0]?.personalizationUsed).toEqual(["Visible sales leadership role"]);
-    expect(analysis.dmVariants[0]?.offerContextUsed).toEqual(["LinkedIn to HubSpot workflow"]);
+    expect(analysis.dmVariants).toEqual([]);
+    expect(analysis.outreachCoach.humanReviewRequired).toBe(true);
   });
 
   it("does not trigger the retry request for the Direct pitch label alias", async () => {
@@ -350,7 +349,7 @@ describe("OpenAI analysis response normalization", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(analysis.dmVariants[1]?.label).toBe("Direct value pitch");
+    expect(analysis.dmVariants).toEqual([]);
   });
 
   it("does not trigger the retry request for normalized v0.5 decision intelligence aliases", async () => {
@@ -480,6 +479,96 @@ describe("OpenAI analysis response normalization", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(analysis.dmVariants).toEqual([]);
+  });
+
+  it("returns quick profile analysis without calling OpenAI", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const analysis = new OpenAiService().quickAnalyzeProfile(
+      {
+        fullName: "Joris Milloux",
+        headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+        companyName: "MLX Digital Marketing",
+        currentRoleCompany: "MLX Digital Marketing",
+        about: "HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.",
+        profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+      },
+      {
+        ...DEFAULT_USER_SETTINGS,
+        targetRoles: "HubSpot Consultant, RevOps Consultant, CRM Consultant",
+        targetIndustries: "HubSpot consulting, RevOps, CRM implementation",
+        mainPainPointsSolved: "HubSpot CRM implementation, CRM hygiene, RevOps automation"
+      }
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(analysis.leadScore).toBeGreaterThanOrEqual(65);
+    expect(analysis.leadScore).toBeLessThanOrEqual(82);
+    expect(analysis.recommendedAction).toBe("Research more");
+    expect(analysis.outreachReadiness.timingRecommendation).toBe("Research first");
+    expect(analysis.dmVariants).toEqual([]);
+  });
+
+  it("enriches a quick analysis with one compact OpenAI request and no retry", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test-key");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  whyThisAngle: "Use a low-pressure feedback request because the profile is relevant but buying intent is not confirmed.",
+                  whatToAvoid: ["Do not claim confirmed HubSpot pain."],
+                  outreachStrategy: {
+                    whyRelevant: "HubSpot, CRM, and RevOps consultant context is visible.",
+                    bestAngle: "Feedback request",
+                    painHypothesis: "CRM workflow improvement may be relevant, but direct pain is not confirmed.",
+                    whatToAvoid: "Avoid assuming budget, company size, or buying intent.",
+                    suggestedCTA: "Ask whether this workflow is worth a quick look."
+                  },
+                  outreachCoach: {
+                    message: "Keep the outreach manual and cautious.",
+                    mainWarning: "Do not overstate the evidence.",
+                    recommendedPreparation: "Review company size before outreach."
+                  },
+                  decisionChangeConditions: [],
+                  nextBestResearchActions: []
+                })
+              }
+            }
+          ]
+        })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new OpenAiService();
+    const profile = {
+      fullName: "Joris Milloux",
+      headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+      companyName: "MLX Digital Marketing",
+      currentRoleCompany: "MLX Digital Marketing",
+      about: "HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.",
+      profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+    };
+    const settings = {
+      ...DEFAULT_USER_SETTINGS,
+      targetRoles: "HubSpot Consultant, RevOps Consultant, CRM Consultant",
+      targetIndustries: "HubSpot consulting, RevOps, CRM implementation",
+      mainPainPointsSolved: "HubSpot CRM implementation, CRM hygiene, RevOps automation"
+    };
+    const quick = service.quickAnalyzeProfile(profile, settings);
+
+    const enriched = await service.enrichProfileAnalysis(profile, quick, settings);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(enriched.outreachStrategy.bestAngle).toBe("Feedback request");
+    expect(enriched.outreachCoach.message).toBe("Keep the outreach manual and cautious.");
+    expect(enriched.recommendedAction).toBe("Research more");
+    expect(enriched.dmVariants).toEqual([]);
   });
 });
 

@@ -270,6 +270,57 @@ describe("evidence-based lead scoring", () => {
     expect(normalized.positiveSignals.filter((signal) => /hubspot|crm|revops/i.test(signal)).length).toBeLessThanOrEqual(2);
   });
 
+  it("recomputes limited context, company, and outreach timing from extracted About and company fields", () => {
+    const settings = {
+      ...DEFAULT_USER_SETTINGS,
+      targetRoles: "HubSpot Consultant, RevOps Consultant, CRM Consultant, SDR Manager",
+      targetIndustries: "HubSpot consulting, RevOps, CRM implementation, agencies",
+      mainPainPointsSolved: "HubSpot CRM implementation, CRM hygiene, outbound prospecting, lead generation, RevOps automation"
+    };
+    const normalized = normalizeProfileAnalysisScore(
+      {
+        leadScore: 98,
+        fitLabel: "Strong fit",
+        persona: "HubSpot and RevOps consultant",
+        painPoints: ["CRM workflow quality"],
+        icebreaker: "Noticed your HubSpot and RevOps consulting work.",
+        recommendedAction: "Pursue now",
+        confidence: "medium",
+        limitedContextReasons: ["Profile text is limited to headline or short visible context.", "Company context missing"],
+        confidenceReason: "Confidence is medium because profile text is limited to headline or short visible context."
+      },
+      {
+        fullName: "Joris Milloux",
+        headline: "Consultant HubSpot CRM (Diamond Partner) | RevOps & AI",
+        companyName: "MLX Digital Marketing",
+        currentRoleCompany: "MLX Digital Marketing",
+        about: "HubSpot CRM consultant helping companies improve CRM, RevOps, automation, and AI workflows.",
+        contextConfidence: "medium",
+        extractionWarnings: ["Limited profile context detected. AI score may be less accurate."],
+        profileUrl: "https://www.linkedin.com/in/joris-milloux/"
+      },
+      settings
+    );
+
+    expect(normalized.leadScore).toBeGreaterThanOrEqual(65);
+    expect(normalized.leadScore).toBeLessThanOrEqual(82);
+    expect(normalized.confidence).toBe("medium");
+    expect(normalized.dataSufficiency).toBe("partial");
+    expect(normalized.recommendedAction).toBe("Research more");
+    expect(normalized.outreachReadiness.readiness).toBe("almost_ready");
+    expect(normalized.outreachReadiness.timingRecommendation).toBe("Research first");
+    expect(normalized.limitedContextReasons).not.toContain("Profile text is limited to headline or short visible context");
+    expect(normalized.limitedContextReasons.join(" ")).not.toMatch(/company context/i);
+    expect(normalized.limitedContextReasons).toContain("Company size missing");
+    expect(normalized.outreachReadiness.blockers.join(" ")).not.toContain("Company context missing");
+    expect(normalized.confidenceReason).toBe(
+      "Confidence is medium because the visible About section supports the role and industry fit, but company size is not confirmed."
+    );
+    expect(normalized.decisionBreakdown.companyFit.status).toBe("moderate");
+    expect(normalized.decisionBreakdown.companyFit.explanation).toBe("Current company is visible, but company size is not confirmed.");
+    expect(normalized.scoreEvidence.some((item) => item.category === "company" && item.evidenceText === "MLX Digital Marketing")).toBe(true);
+  });
+
   it("does not lower a strong profile merely because the detailed target lists contain more unmatched options", () => {
     const profile = {
       fullName: "Joris Milloux",

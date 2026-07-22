@@ -120,6 +120,32 @@ describe("LinkedIn profile extraction", () => {
     expect(validateLinkedInProfileIdentity(profile)).toEqual({ ok: true });
   });
 
+  it("extracts the current company from the profile top-card right panel only", () => {
+    document.body.innerHTML = `
+      <main>
+        <section data-view-name="profile-top-card">
+          <div class="pv-text-details__left-panel">
+            <h1>Joris Milloux</h1>
+            <div class="text-body-medium break-words">Consultant HubSpot CRM (Diamond Partner) | RevOps & AI</div>
+          </div>
+          <div class="pv-text-details__right-panel">
+            <a href="/company/mlx-digital-marketing/"><span aria-hidden="true">MLX Digital Marketing</span></a>
+          </div>
+        </section>
+        <aside>
+          <p>People also viewed</p>
+          <a href="/company/unrelated-enterprise/"><span aria-hidden="true">Unrelated Enterprise</span></a>
+        </aside>
+      </main>
+    `;
+
+    const profile = extractLinkedInProfile();
+
+    expect(profile.companyName).toBe("MLX Digital Marketing");
+    expect(profile.currentRoleCompany).toBe("MLX Digital Marketing");
+    expect(profile.extractionSources?.companyName).toMatch(/profile-top-card current company/);
+  });
+
   it("extracts visible About and Experience context without LinkedIn boilerplate", () => {
     document.body.innerHTML = `
       <main>

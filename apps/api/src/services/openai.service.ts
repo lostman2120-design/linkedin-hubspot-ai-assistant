@@ -4,11 +4,9 @@ import { z } from "zod";
 import { AppError } from "../utils/errors.js";
 import {
   buildEnglishOnlyInstruction,
-  buildLeadScoringInstruction,
-  createEnglishOnlyGeneratedDmSchema,
-  createEnglishOnlyProfileAnalysisSchema
+  createEnglishOnlyGeneratedDmSchema
 } from "./openaiPromptRules.js";
-import { buildLeadScoringContext, normalizeProfileAnalysisScore } from "./leadScoring.js";
+import { buildLeadScoringContext, buildQuickProfileAnalysis, normalizeProfileAnalysisScore } from "./leadScoring.js";
 
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -66,6 +64,28 @@ function buildSettingsSummary(userSettings: UserSettings): string {
     null,
     2
   );
+}
+
+function buildCompactSettingsSummary(userSettings: UserSettings): Record<string, unknown> {
+  const sellerContext = userSettings.sellerContext ?? DEFAULT_SELLER_CONTEXT;
+
+  return {
+    offer: userSettings.productOrServiceDescription || sellerContext.productOrServiceDescription,
+    targetCustomer: userSettings.targetCustomerProfile,
+    targetRoles: userSettings.targetRoles,
+    targetIndustries: userSettings.targetIndustries,
+    targetCompanySize: userSettings.targetCompanySize,
+    painPointsSolved: userSettings.mainPainPointsSolved,
+    excludedRoles: userSettings.excludedRoles,
+    sellerContext: {
+      productOrServiceName: sellerContext.productOrServiceName,
+      targetOutcome: sellerContext.targetOutcome,
+      preferredCta: sellerContext.preferredCta,
+      claimsToAvoid: sellerContext.claimsToAvoid,
+      brandVoice: sellerContext.brandVoice,
+      compatibilityContext: sellerContext.compatibilityContext
+    }
+  };
 }
 
 function safeProfileForPrompt(profile: LinkedInProfile): LinkedInProfile {
@@ -247,6 +267,54 @@ const decisionBreakdownFields = [
   "dataSufficiency",
   "riskLevel"
 ] as const;
+
+const AnalysisEnrichmentSchema = z.object({
+  whyThisAngle: z.string().trim().max(320).optional(),
+  whatToAvoid: z.array(z.string().trim().min(1).max(180)).max(3).default([]),
+  outreachStrategy: z
+    .object({
+      whyRelevant: z.string().trim().min(1).max(420),
+      bestAngle: z.string().trim().min(1).max(260),
+      painHypothesis: z.string().trim().min(1).max(420),
+      whatToAvoid: z.string().trim().min(1).max(420),
+      suggestedCTA: z.string().trim().min(1).max(280)
+    })
+    .optional(),
+  outreachCoach: z
+    .object({
+      message: z.string().trim().min(1).max(420).optional(),
+      mainWarning: z.string().trim().min(1).max(320).optional(),
+      recommendedPreparation: z.string().trim().min(1).max(320).optional()
+    })
+    .default({}),
+  actionReasonSupplement: z.string().trim().max(260).optional(),
+  confidenceReason: z.string().trim().max(320).optional(),
+  decisionChangeConditions: z
+    .array(
+      z.object({
+        condition: z.string().trim().min(1).max(180),
+        currentState: z.string().trim().min(1).max(180),
+        impactIfConfirmed: z.string().trim().min(1).max(240),
+        recommendedActionIfConfirmed: z.enum(["Pursue now", "Research more", "Low priority", "Do not contact yet"])
+      })
+    )
+    .max(2)
+    .default([]),
+  nextBestResearchActions: z
+    .array(
+      z.object({
+        priority: z.enum(["high", "medium", "low"]),
+        action: z.string().trim().min(1).max(180),
+        reason: z.string().trim().min(1).max(220),
+        expectedDecisionImpact: z.string().trim().min(1).max(220),
+        safeSourceSuggestion: z.string().trim().min(1).max(180)
+      })
+    )
+    .max(2)
+    .default([])
+});
+
+type AnalysisEnrichment = z.infer<typeof AnalysisEnrichmentSchema>;
 
 export function normalizeAnalysisResponseForSchema(value: unknown): unknown {
   if (!isRecord(value)) {
@@ -640,173 +708,103 @@ function estimateResponseFieldCount(userPrompt: string): number {
 }
 
 export class OpenAiService {
+  quickAnalyzeProfile(profile: LinkedInProfile, userSettings: UserSettings): ProfileAnalysis {
+    return buildQuickProfileAnalysis(profile, userSettings);
+  }
+
   async analyzeProfile(profile: LinkedInProfile, userSettings: UserSettings): Promise<ProfileAnalysis> {
     const analyzeStartedAt = Date.now();
-    const analysisSchema = createEnglishOnlyProfileAnalysisSchema();
-    const scoringContext = buildLeadScoringContext(profile, userSettings);
 
     try {
-      const systemPrompt = [
-        "You are a careful sales research assistant.",
-        "Use only the visible LinkedIn profile information provided by the user.",
-        "Separate facts from assumptions in your reasoning, but return only the requested JSON fields.",
-        "If information is not available, return the word Unknown.",
-        "Do not invent private information.",
-        buildLeadScoringInstruction(Boolean(userSettings.targetCustomerProfile.trim() || userSettings.targetRoles.trim())),
-        "Persona descriptions, pain points, icebreakers, and recommended next actions must be English-only.",
-        "Score fit against the user's ICP settings when present.",
-        "Use the Seller Context to understand what the user sells, the target outcome, differentiators, proof points, CTA, allowed claims, claims to avoid, brand voice, and compatibility context.",
-        "Do not invent proof, customer results, HubSpot usage, budget, buying intent, company size, or technology stack.",
-        "Facts must be based on visible profile text or saved user settings. Inferences must be labeled as inferences.",
-        "Use Research more or Low priority when visible evidence is limited, risk is high, or fit is unclear.",
-        "Do not claim the person uses HubSpot unless it is explicitly visible.",
-        "For Sales Decision Intelligence fields, use cautious explanations and unconfirmed conditional language.",
-        "Never recommend crawling, scraping, automatic LinkedIn browsing, cookie access, or automatic DM sending.",
-        "Always state that human review is required before outreach.",
-        "Do not generate full DM drafts during profile analysis. DM drafts are generated only after the user clicks a message-generation action.",
-        buildEnglishOnlyInstruction(),
-        "Always return valid JSON."
-      ].join(" ");
-
-      const userPrompt = `Analyze this LinkedIn profile for sales fit.
-
-Return one JSON object with these exact fields:
-- leadScore: an integer from 0 to 100
-- fitLabel: "Strong fit", "Possible fit", "Weak fit", or "Not enough data"
-- positiveSignals: an array of short English strings
-- negativeSignals: an array of short English strings
-- missingInformation: an array of short English strings
-- riskWarnings: an array of short English strings
-- recommendedAction: exactly one of "Pursue now", "Research more", "Low priority", or "Do not contact yet"
-- actionReason: a concise English explanation of why recommendedAction is appropriate; explain the sales decision, not the DM wording
-- actionRisks: up to two short strings
-- actionPrerequisites: up to two short strings
-- actionExpiration: a short re-evaluation condition
-- recommendedNextAction: a short English sentence
-- decisionConfidence: "high", "medium", or "low"
-- dataSufficiency: "sufficient", "partial", or "insufficient"
-- evidenceCoverage: an integer from 0 to 100
-- confidenceReason: a short English explanation
-- limitedContextReasons: an array of short English strings
-- recommendedOutreachAngle: a short English label such as Feedback request, Soft opener, Direct pitch, Research first, or Skip / not a good fit
-- whyThisAngle: a short English explanation
-- whatToAvoid: up to three short English strings
-- outreachStrategy: an object with whyRelevant, bestAngle, painHypothesis, whatToAvoid, and suggestedCTA; every field must be a concise English string
-- decisionBreakdown: an object with roleFit, industryFit, companyFit, buyerRelevance, painEvidence, timingSignal, relationshipSignal, dataSufficiency, riskLevel
-- decisionChangeConditions: up to three objects with condition, currentState, impactIfConfirmed, recommendedActionIfConfirmed
-- nextBestResearchActions: up to two objects with priority, action, reason, expectedDecisionImpact, safeSourceSuggestion
-- outreachReadiness: an object with readiness, readinessScore, timingRecommendation, reason, blockers, prerequisites
-- outreachCoach: an object with verdict, message, mainWarning, recommendedPreparation, humanReviewRequired
-- persona: a short English description
-- painPoints: an array of short English pain hypotheses; do not present unconfirmed pains as confirmed facts
-- icebreaker: a short English sentence
-- confidence: "high", "medium", or "low"
-- scoreEvidence: up to five evidence objects with id, signalType, basis, category, summary, evidenceText, sourceSection, confidence, scoreImpact
-- scoringMetadata: scoringVersion, finalScore, fitLabel, confidence, factsUsedCount, inferencesUsedCount, missingCriteriaCount, disqualifierCount, analysisDepth
-- dmVariants: return an empty array during Analyze Profile
-
-Every decisionBreakdown item must have exactly:
-{
-  "status": "strong",
-  "score": 0,
-  "explanation": "string",
-  "evidence": ["string"],
-  "source": "string",
-  "basis": "fact"
-}
-Allowed decisionBreakdown.status values are exactly: "strong", "moderate", "weak", "missing", "negative".
-Allowed decisionBreakdown.basis values are exactly: "fact", "inference", "mixed", "missing".
-Do not return "partial" for decisionBreakdown.status. Use "moderate".
-Do not use status "strong" when source is "not_available", basis is "missing", or evidence is empty.
-
-Allowed outreachReadiness.readiness values are exactly: "ready", "almost_ready", "not_ready", "avoid".
-Do not return "low" for outreachReadiness.readiness. Use "not_ready".
-Allowed outreachReadiness.timingRecommendation values are exactly: "Contact now", "Research first", "Wait for a stronger signal", "Do not contact yet".
-Do not return full sentences for timingRecommendation.
-Allowed outreachCoach.verdict values are exactly: "Send after review", "Research before sending", "Rewrite before sending", "Do not send yet".
-Do not return "Proceed with caution" for outreachCoach.verdict. Use "Research before sending".
-
-outreachCoach.humanReviewRequired must always be true.
-Do not use "Send now"; use "Send after review" only when appropriate.
-Research actions must be safe manual actions only, such as reviewing visible profile sections, public company information, or asking a low-pressure qualification question.
-
-Compact valid enum example:
-{
-  "decisionBreakdown": {
-    "dataSufficiency": {
-      "status": "moderate",
-      "score": 56,
-      "explanation": "Some visible evidence exists, but context is incomplete.",
-      "evidence": ["Visible headline"],
-      "source": "headline",
-      "basis": "fact"
-    }
-  },
-  "outreachReadiness": {
-    "readiness": "almost_ready",
-    "readinessScore": 72,
-    "timingRecommendation": "Research first",
-    "reason": "Relevant context is visible, but direct pain is not confirmed.",
-    "blockers": ["No direct pain evidence"],
-    "prerequisites": ["Confirm CRM workflow relevance"]
-  },
-  "outreachCoach": {
-    "verdict": "Research before sending",
-    "message": "Review the assumptions before writing.",
-    "mainWarning": "Do not claim unconfirmed pain.",
-    "recommendedPreparation": "Check visible About or Experience details.",
-    "humanReviewRequired": true
-  },
-  "dmVariants": []
-}
-
-Do not use placeholder values. Calculate leadScore from the visible profile and ICP settings.
-Do not use LinkedIn URLs, LinkedIn source labels, or the fact that this is a LinkedIn profile as pain-point evidence.
-A Founder, CEO, or Lead keyword alone is not enough for Strong fit.
-Strong fit requires multiple independent ICP signals. Missing company size lowers confidence to medium or low.
-When industry, company size, operational pain, and buyer relevance are weak or missing, use Research more or Low priority even if seniority is visible.
-actionReason must explain the Recommended Action using visible matches, missing criteria, and risks. It must not describe the DM angle.
-Do not overclaim. Separate visible facts from cautious inferences in the signal arrays.
-Do not invent facts that are not visible in the LinkedIn profile or saved Seller Context.
-If evidence is insufficient, set recommendedAction to "Research more" or "Low priority".
-Respect claimsToAvoid and compatibilityContext from Seller Context.
-
-User settings:
-${buildSettingsSummary(userSettings)}
-
-Backend scoring context:
-${JSON.stringify(safeScoringContextForPrompt(scoringContext), null, 2)}
-
-Visible LinkedIn profile:
-${JSON.stringify(safeProfileForPrompt(profile), null, 2)}
-`;
-
-      const analysis = await requestValidatedJson(
-        analysisSchema as z.ZodType<ProfileAnalysis>,
-        systemPrompt,
-        userPrompt,
-        "Return corrected JSON only. leadScore must be a meaningful integer from 0 to 100, not a copied placeholder. All text fields must be fluent English only.",
-        {
-          logAnalysisPerformance: true,
-          normalizeBeforeValidation: normalizeAnalysisResponseForSchema,
-          requestedSections: [
-            "lead decision",
-            "decision breakdown",
-            "outreach readiness",
-            "research actions",
-            "score evidence",
-            "outreach strategy"
-          ]
-        }
-      );
-
-      return ensureAnalysisDefaults(normalizeProfileAnalysisScore(analysis, profile, userSettings));
+      const quickAnalysis = this.quickAnalyzeProfile(profile, userSettings);
+      return await this.enrichProfileAnalysis(profile, quickAnalysis, userSettings);
     } finally {
       console.log("[openai-analysis] total completed", {
         durationMs: Date.now() - analyzeStartedAt,
         model: getOpenAiModel()
       });
     }
+  }
+
+  async enrichProfileAnalysis(
+    profile: LinkedInProfile,
+    quickAnalysis: ProfileAnalysis,
+    userSettings: UserSettings
+  ): Promise<ProfileAnalysis> {
+    const scoringContext = buildLeadScoringContext(profile, userSettings);
+    const systemPrompt = [
+      "You improve wording for a precomputed B2B sales decision.",
+      "Do not change the lead score, fit label, recommended action, readiness, timing, or evidence.",
+      "Use only visible LinkedIn profile facts, the computed quick decision, and saved seller settings.",
+      "Do not invent HubSpot usage, buying intent, company size, budget, private data, or hidden profile details.",
+      "Write natural English for a US SaaS sales workflow.",
+      "Never recommend scraping, crawling, automatic LinkedIn browsing, cookie access, or automatic DM sending.",
+      buildEnglishOnlyInstruction(),
+      "Return compact valid JSON only."
+    ].join(" ");
+
+    const userPrompt = `Return only these optional enrichment fields:
+{
+  "whyThisAngle": "one short sentence",
+  "whatToAvoid": ["max 3 short strings"],
+  "outreachStrategy": {
+    "whyRelevant": "string",
+    "bestAngle": "string",
+    "painHypothesis": "string",
+    "whatToAvoid": "string",
+    "suggestedCTA": "string"
+  },
+  "outreachCoach": {
+    "message": "string",
+    "mainWarning": "string",
+    "recommendedPreparation": "string"
+  },
+  "actionReasonSupplement": "optional one sentence",
+  "confidenceReason": "optional one sentence",
+  "decisionChangeConditions": [],
+  "nextBestResearchActions": []
+}
+
+Keep the response under 3500 characters. Do not include DM drafts.
+
+Input:
+${JSON.stringify(
+  {
+    sellerSettings: buildCompactSettingsSummary(userSettings),
+    quickDecision: {
+      leadScore: quickAnalysis.leadScore,
+      fitLabel: quickAnalysis.fitLabel,
+      recommendedAction: quickAnalysis.recommendedAction,
+      actionReason: quickAnalysis.actionReason,
+      confidence: quickAnalysis.confidence,
+      dataSufficiency: quickAnalysis.dataSufficiency,
+      confidenceReason: quickAnalysis.confidenceReason,
+      limitedContextReasons: quickAnalysis.limitedContextReasons,
+      outreachReadiness: quickAnalysis.outreachReadiness,
+      positiveSignals: quickAnalysis.positiveSignals,
+      missingInformation: quickAnalysis.missingInformation,
+      riskWarnings: quickAnalysis.riskWarnings,
+      scoreEvidence: quickAnalysis.scoreEvidence.slice(0, 5)
+    },
+    deterministicSignals: safeScoringContextForPrompt(scoringContext),
+    visibleProfile: safeProfileForPrompt(profile)
+  },
+  null,
+  2
+)}`;
+
+    const enrichment = await requestValidatedJson<AnalysisEnrichment>(
+      AnalysisEnrichmentSchema as z.ZodType<AnalysisEnrichment>,
+      systemPrompt,
+      userPrompt,
+      "Return corrected compact JSON only. Keep arrays short and do not include changed scores, changed actions, or DM drafts.",
+      {
+        logAnalysisPerformance: true,
+        requestedSections: ["enrichment-only"]
+      }
+    );
+
+    return ensureAnalysisDefaults(mergeAnalysisEnrichment(quickAnalysis, enrichment, profile, userSettings));
   }
 
   async generateDm(
@@ -866,6 +864,41 @@ ${JSON.stringify(analysis, null, 2)}
       "Return corrected JSON only. Make the message shorter, more personal, less salesy, and English-only."
     );
   }
+}
+
+function mergeAnalysisEnrichment(
+  quickAnalysis: ProfileAnalysis,
+  enrichment: AnalysisEnrichment,
+  profile: LinkedInProfile,
+  userSettings: UserSettings
+): ProfileAnalysis {
+  const merged = normalizeProfileAnalysisScore(
+    {
+      ...quickAnalysis,
+      whyThisAngle: enrichment.whyThisAngle || quickAnalysis.whyThisAngle,
+      whatToAvoid: enrichment.whatToAvoid.length ? enrichment.whatToAvoid : quickAnalysis.whatToAvoid,
+      outreachStrategy: enrichment.outreachStrategy ?? quickAnalysis.outreachStrategy,
+      decisionChangeConditions: enrichment.decisionChangeConditions.length
+        ? enrichment.decisionChangeConditions
+        : quickAnalysis.decisionChangeConditions,
+      nextBestResearchActions: enrichment.nextBestResearchActions.length
+        ? enrichment.nextBestResearchActions
+        : quickAnalysis.nextBestResearchActions
+    },
+    profile,
+    userSettings
+  );
+
+  return {
+    ...merged,
+    outreachCoach: {
+      ...merged.outreachCoach,
+      message: enrichment.outreachCoach.message ?? merged.outreachCoach.message,
+      mainWarning: enrichment.outreachCoach.mainWarning ?? merged.outreachCoach.mainWarning,
+      recommendedPreparation: enrichment.outreachCoach.recommendedPreparation ?? merged.outreachCoach.recommendedPreparation,
+      humanReviewRequired: true
+    }
+  };
 }
 
 function ensureAnalysisDefaults(analysis: ProfileAnalysis): ProfileAnalysis {

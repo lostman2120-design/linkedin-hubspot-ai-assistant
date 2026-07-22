@@ -1,4 +1,4 @@
-import { DEFAULT_SELLER_CONTEXT } from "@linkedin-hubspot-ai/shared";
+import { DEFAULT_SELLER_CONTEXT, ProfileAnalysisSchema } from "@linkedin-hubspot-ai/shared";
 import type { LinkedInProfile, ProfileAnalysis, ScoreEvidence, ScoringMetadata, UserSettings } from "@linkedin-hubspot-ai/shared";
 
 const SENIORITY_TERMS = [
@@ -411,11 +411,15 @@ export function buildLeadScoringContext(
   const excludedMatches = scoreKeywordMatches(text, userSettings.excludedRoles, 24);
   const companySizeEvidence = hasCompanySizeEvidence(text);
   const reliableCompany = hasReliableCompany(profile);
+  const hasAbout = Boolean(profile.about?.trim() || profile.visibleProfileContext?.about?.text?.trim());
+  const hasExperienceContext = Boolean(
+    profile.currentRoleDescription?.trim() || (profile.visibleProfileContext?.experience?.visibleItems ?? []).length > 0
+  );
   const hasProfileDepth = Boolean(detailedProfileText);
+  const staleLimitedWarning = (profile.extractionWarnings ?? []).some((warning) => /limited profile context/i.test(warning));
   const limitedProfileContext = !hasProfileDepth ||
     profile.contextConfidence === "low" ||
-    profile.contextConfidence === "medium" ||
-    (profile.extractionWarnings ?? []).some((warning) => /limited profile context/i.test(warning));
+    (!hasAbout && !hasExperienceContext && (profile.contextConfidence === "medium" || staleLimitedWarning));
   const operationalContextCount = countMatches(text, OPERATIONAL_PAIN_TERMS);
   const nonIcpContext = countMatches(text, NON_ICP_CONTEXT_TERMS) > 0 && operationalContextCount < 2;
 
@@ -425,6 +429,18 @@ export function buildLeadScoringContext(
 
   if (reliableCompany) {
     score += 4;
+    scoreEvidence.push(
+      createEvidence({
+        signalType: "positive",
+        basis: "fact",
+        category: "company",
+        summary: "Current company is visible on the profile.",
+        evidenceText: profile.companyName ?? null,
+        sourceSection: "profile",
+        confidence: "High",
+        scoreImpact: 4
+      })
+    );
   }
 
   if (seniorityMatches > 0) {
@@ -684,6 +700,9 @@ export function buildLeadScoringContext(
   if (limitedProfileContext) {
     finalHeuristicScore = Math.min(finalHeuristicScore, 82);
   }
+  if (!companySizeEvidence && decisionSignals.strongCommercialContext) {
+    finalHeuristicScore = Math.min(finalHeuristicScore, 82);
+  }
 
   const heuristicConfidence: ProfileAnalysis["confidence"] = companySizeEvidence && independentSignalCount >= 4
     ? "high"
@@ -779,6 +798,7 @@ export function normalizeProfileAnalysisScore(
     context.decisionSignals.buyerRelevance &&
     context.decisionSignals.operationalPainEvidence &&
     context.decisionSignals.reliableCompany &&
+    context.decisionSignals.companySizeEvidence &&
     context.decisionSignals.hasProfileDepth &&
     (finalConfidence === "high" || (finalConfidence === "medium" && independentSignalCount >= 7));
   let finalScore = Math.max(0, Math.min(100, blendedScore));
@@ -799,6 +819,9 @@ export function normalizeProfileAnalysisScore(
   if (context.decisionSignals.limitedProfileContext) {
     finalScore = Math.min(finalScore, 82);
   }
+  if (!context.decisionSignals.companySizeEvidence && context.decisionSignals.strongCommercialContext) {
+    finalScore = Math.min(finalScore, 82);
+  }
   if (finalConfidence === "low") {
     finalScore = Math.min(finalScore, 54);
   }
@@ -817,7 +840,7 @@ export function normalizeProfileAnalysisScore(
   ]).slice(0, 20);
   const scoreEvidence = limitScoreEvidence(fullScoreEvidence);
   const recommendedAction = recommendedActionForDecision(finalScore, finalConfidence, context.decisionSignals, independentSignalCount);
-  const decisionIntelligence = buildDecisionIntelligence({
+  let decisionIntelligence = buildDecisionIntelligence({
     context,
     profile,
     scoreEvidence: fullScoreEvidence,
@@ -825,6 +848,17 @@ export function normalizeProfileAnalysisScore(
     finalConfidence,
     recommendedAction
   });
+  const alignedRecommendedAction = alignRecommendedActionWithReadiness(recommendedAction, decisionIntelligence.outreachReadiness, context.decisionSignals);
+  if (alignedRecommendedAction !== recommendedAction) {
+    decisionIntelligence = buildDecisionIntelligence({
+      context,
+      profile,
+      scoreEvidence: fullScoreEvidence,
+      finalScore,
+      finalConfidence,
+      recommendedAction: alignedRecommendedAction
+    });
+  }
 
   return {
     ...analysis,
@@ -838,10 +872,46 @@ export function normalizeProfileAnalysisScore(
     negativeSignals: buildNegativeSignals(context, analysis.negativeSignals ?? []),
     riskWarnings: buildNegativeSignals(context, analysis.riskWarnings ?? []),
     missingInformation: (analysis.missingInformation ?? []).slice(0, 4),
-    recommendedAction,
-    actionReason: buildActionReason(recommendedAction, context.decisionSignals),
-    recommendedNextAction: recommendedNextStep(recommendedAction)
+    recommendedAction: alignedRecommendedAction,
+    actionReason: buildActionReason(alignedRecommendedAction, context.decisionSignals),
+    recommendedNextAction: recommendedNextStep(alignedRecommendedAction)
   };
+}
+
+export function buildQuickProfileAnalysis(profile: LinkedInProfile, userSettings: UserSettings): ProfileAnalysis {
+  const context = buildLeadScoringContext(profile, userSettings);
+  const confidence = context.scoringMetadata.confidence;
+  const fitLabel = fitLabelForScore(context.heuristicScore, confidence);
+  const seed = ProfileAnalysisSchema.parse({
+    leadScore: context.heuristicScore,
+    fitLabel,
+    persona: buildQuickPersona(context, profile),
+    painPoints: buildQuickPainPoints(context),
+    icebreaker: buildQuickIcebreaker(profile),
+    recommendedAction: recommendedActionForDecision(
+      context.heuristicScore,
+      confidence,
+      context.decisionSignals,
+      countDecisionSignals(context.decisionSignals)
+    ),
+    confidence,
+    positiveSignals: buildPositiveSignals(context, []),
+    negativeSignals: buildNegativeSignals(context, []),
+    missingInformation: context.scoreEvidence
+      .filter((item) => item.signalType === "missing")
+      .map((item) => item.summary)
+      .slice(0, 4),
+    riskWarnings: buildNegativeSignals(context, []),
+    recommendedOutreachAngle: context.decisionSignals.strongCommercialContext ? "Feedback request" : "Research first",
+    whyThisAngle: context.decisionSignals.strongCommercialContext
+      ? "The visible profile has HubSpot, CRM, or RevOps relevance, but outreach should stay low-pressure until missing context is checked."
+      : "The visible profile needs more sales-decision context before a stronger outreach angle.",
+    whatToAvoid: ["Avoid unsupported claims about HubSpot usage, CRM pain, buying intent, or company size."],
+    scoreEvidence: context.scoreEvidence,
+    dmVariants: []
+  });
+
+  return normalizeProfileAnalysisScore(seed, profile, userSettings);
 }
 
 function countDecisionSignals(signals: LeadDecisionSignals): number {
@@ -903,6 +973,28 @@ function recommendedActionForDecision(
   }
 
   return "Do not contact yet";
+}
+
+function alignRecommendedActionWithReadiness(
+  action: ProfileAnalysis["recommendedAction"],
+  readiness: ProfileAnalysis["outreachReadiness"],
+  signals: LeadDecisionSignals
+): ProfileAnalysis["recommendedAction"] {
+  if (
+    action === "Pursue now" &&
+    (readiness.timingRecommendation === "Research first" ||
+      readiness.readiness === "not_ready" ||
+      (readiness.readiness === "almost_ready" &&
+        (!signals.buyerRelevance || !signals.operationalPainEvidence || !signals.reliableCompany)))
+  ) {
+    return "Research more";
+  }
+
+  if (action === "Do not contact yet" && readiness.timingRecommendation === "Contact now") {
+    return "Research more";
+  }
+
+  return action;
 }
 
 function buildActionReason(action: ProfileAnalysis["recommendedAction"], signals: LeadDecisionSignals): string {
@@ -973,7 +1065,13 @@ function buildDecisionIntelligence(input: DecisionIntelligenceInput): Pick<
   const evidenceCoverage = calculateEvidenceCoverage(input.context.decisionSignals);
   const limitedContextReasons = buildLimitedContextReasons(input.context.decisionSignals, input.profile);
   const dataSufficiency = buildDataSufficiency(input.context.decisionSignals, evidenceCoverage);
-  const confidenceReason = buildConfidenceReason(input.finalConfidence, input.context.decisionSignals, evidenceCoverage, limitedContextReasons);
+  const confidenceReason = buildConfidenceReason(
+    input.finalConfidence,
+    input.context.decisionSignals,
+    evidenceCoverage,
+    limitedContextReasons,
+    input.profile
+  );
   const actionRisks = buildActionRisks(input.context.decisionSignals, limitedContextReasons);
   const actionPrerequisites = buildActionPrerequisites(input.context.decisionSignals, input.recommendedAction);
   const outreachReadiness = buildOutreachReadiness(input.context.decisionSignals, input.finalConfidence, dataSufficiency, input.recommendedAction);
@@ -1155,7 +1253,7 @@ function buildDataSufficiency(
   signals: LeadDecisionSignals,
   evidenceCoverage: number
 ): ProfileAnalysis["dataSufficiency"] {
-  if (evidenceCoverage >= 70 && signals.hasProfileDepth && signals.reliableCompany) {
+  if (evidenceCoverage >= 70 && signals.hasProfileDepth && signals.reliableCompany && signals.companySizeEvidence) {
     return "sufficient";
   }
 
@@ -1167,13 +1265,18 @@ function buildDataSufficiency(
 }
 
 function buildLimitedContextReasons(signals: LeadDecisionSignals, profile: LinkedInProfile): string[] {
+  const hasAbout = Boolean(profile.about?.trim() || profile.visibleProfileContext?.about?.text?.trim());
+  const hasExperienceContext = Boolean(
+    profile.currentRoleDescription?.trim() || (profile.visibleProfileContext?.experience?.visibleItems ?? []).length > 0
+  );
+  const isHeadlineOnly = !hasAbout && !hasExperienceContext && signals.limitedProfileContext;
   return dedupeStrings([
     !profile.about ? "About section not detected" : "",
     !profile.currentRoleDescription ? "Current role details missing" : "",
     !signals.companySizeEvidence ? "Company size missing" : "",
     !signals.buyerRelevance ? "Buying intent not visible" : "",
     !signals.operationalPainEvidence ? "No direct pain evidence" : "",
-    signals.limitedProfileContext ? "Profile text is limited to headline or short visible context" : "",
+    isHeadlineOnly ? "Profile text is limited to headline or short visible context" : "",
     !signals.reliableCompany ? "Company context could not be verified" : ""
   ].filter(Boolean));
 }
@@ -1182,7 +1285,8 @@ function buildConfidenceReason(
   confidence: ProfileAnalysis["confidence"],
   signals: LeadDecisionSignals,
   evidenceCoverage: number,
-  limitedContextReasons: string[]
+  limitedContextReasons: string[],
+  profile: LinkedInProfile
 ): string {
   if (confidence === "high" && signals.nonIcpContext) {
     return "Confidence is high because clear negative or non-ICP evidence is visible.";
@@ -1193,6 +1297,17 @@ function buildConfidenceReason(
   }
 
   if (confidence === "medium") {
+    const hasAbout = Boolean(profile.about?.trim() || profile.visibleProfileContext?.about?.text?.trim());
+    if (hasAbout && (profile.headline || signals.roleMatch || signals.industryMatch || signals.strongCommercialContext)) {
+      const missing = dedupeStrings([
+        !signals.companySizeEvidence ? "company size" : "",
+        !signals.buyerRelevance ? "buying intent" : "",
+        !signals.operationalPainEvidence ? "direct workflow pain" : ""
+      ].filter(Boolean));
+      const missingText = missing.length ? `${joinReadableList(missing)} ${missing.length === 1 ? "is" : "are"} not confirmed` : "the remaining gaps are limited";
+      return `Confidence is medium because the visible About section supports the role and industry fit, but ${missingText}.`;
+    }
+
     const reason = limitedContextReasons.length
       ? limitedContextReasons.slice(0, 3).join(", ")
       : `evidence coverage is ${evidenceCoverage}%`;
@@ -1379,7 +1494,14 @@ function buildOutreachReadiness(
     };
   }
 
-  if (action === "Pursue now" && signals.operationalPainEvidence && signals.buyerRelevance && blockers.length <= 1) {
+  if (
+    action === "Pursue now" &&
+    signals.operationalPainEvidence &&
+    signals.buyerRelevance &&
+    signals.reliableCompany &&
+    signals.companySizeEvidence &&
+    blockers.length <= 1
+  ) {
     return {
       readiness: "ready",
       readinessScore: 85,
@@ -1400,6 +1522,42 @@ function buildOutreachReadiness(
     blockers,
     prerequisites
   };
+}
+
+function buildQuickPersona(context: LeadScoringContext, profile: LinkedInProfile): string {
+  if (context.decisionSignals.strongCommercialContext) {
+    return "HubSpot, CRM, or RevOps consultant with potential relevance to a LinkedIn-to-HubSpot workflow.";
+  }
+
+  if (context.decisionSignals.roleMatch || profile.headline) {
+    return "Potential B2B sales or operations prospect based on visible profile context.";
+  }
+
+  return "Profile has limited visible buyer context.";
+}
+
+function buildQuickPainPoints(context: LeadScoringContext): string[] {
+  if (context.decisionSignals.operationalPainEvidence) {
+    return ["Visible CRM, RevOps, outbound, or sales-workflow context may connect to the product."];
+  }
+
+  if (context.decisionSignals.strongCommercialContext) {
+    return ["Possible CRM or RevOps workflow pain is plausible but not directly confirmed."];
+  }
+
+  return ["Current workflow pain is not confirmed from the visible profile."];
+}
+
+function buildQuickIcebreaker(profile: LinkedInProfile): string {
+  if (profile.headline) {
+    return `I noticed your profile mentions ${truncateNatural(profile.headline, 120)}.`;
+  }
+
+  if (profile.companyName) {
+    return `I noticed your current company context at ${truncateNatural(profile.companyName, 80)}.`;
+  }
+
+  return "I noticed your LinkedIn profile and wanted to keep this relevant.";
 }
 
 function buildOutreachCoach(

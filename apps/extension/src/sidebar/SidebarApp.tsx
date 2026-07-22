@@ -659,21 +659,60 @@ export function SidebarApp() {
         visibleTextSampleLimit: PROFILE_TEXT_LIMITS.visibleTextSample
       });
 
-      const result = await apiRequest<unknown>("/ai/analyze-profile", {
+      setMessage("Reading visible profile and calculating ICP fit...");
+      const quickResult = await apiRequest<unknown>("/ai/analyze-profile/quick", {
         method: "POST",
         body: { profile: extractedProfile, userSettings: settings }
       });
-      const normalizedResult = normalizeAnalysisResult(result);
-      console.log("[SidebarApp] Analyze Profile response normalized.", {
+      const quickAnalysis = normalizeAnalysisResult(quickResult);
+      console.log("[SidebarApp] Quick Analyze Profile response normalized.", {
         profileUrl,
-        leadScore: normalizedResult.leadScore,
-        confidence: normalizedResult.confidence,
-        positiveSignals: normalizedResult.positiveSignals.length,
-        negativeSignals: normalizedResult.negativeSignals.length,
-        missingInformation: normalizedResult.missingInformation.length,
-        riskWarnings: normalizedResult.riskWarnings.length,
-        dmVariants: normalizedResult.dmVariants.length
+        leadScore: quickAnalysis.leadScore,
+        confidence: quickAnalysis.confidence,
+        positiveSignals: quickAnalysis.positiveSignals.length,
+        negativeSignals: quickAnalysis.negativeSignals.length,
+        missingInformation: quickAnalysis.missingInformation.length,
+        riskWarnings: quickAnalysis.riskWarnings.length,
+        dmVariants: quickAnalysis.dmVariants.length
       });
+
+      if (activeProfileUrlRef.current !== profileUrl || analysisRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      setAnalysis(quickAnalysis);
+      setStatus("analysis_complete");
+      setNextAction(quickAnalysis.recommendedNextAction || quickAnalysis.recommendedAction);
+      setMessage("Quick decision ready. Generating insights...");
+
+      if (!isBetaProLicenseActive(licenseState)) {
+        setDailyUsage(await incrementDailyUsage("profileAnalyses"));
+      }
+
+      let normalizedResult = quickAnalysis;
+      try {
+        const enrichedResult = await apiRequest<unknown>("/ai/analyze-profile/enrich", {
+          method: "POST",
+          body: { profile: extractedProfile, analysis: quickAnalysis, userSettings: settings }
+        });
+        normalizedResult = normalizeAnalysisResult(enrichedResult);
+        console.log("[SidebarApp] Enriched Analyze Profile response normalized.", {
+          profileUrl,
+          leadScore: normalizedResult.leadScore,
+          confidence: normalizedResult.confidence,
+          positiveSignals: normalizedResult.positiveSignals.length,
+          negativeSignals: normalizedResult.negativeSignals.length,
+          missingInformation: normalizedResult.missingInformation.length,
+          riskWarnings: normalizedResult.riskWarnings.length,
+          dmVariants: normalizedResult.dmVariants.length
+        });
+      } catch (error) {
+        if (activeProfileUrlRef.current !== profileUrl || analysisRequestIdRef.current !== requestId) {
+          return;
+        }
+        setStatus("analysis_complete");
+        setMessage(`Quick decision is ready. AI insights could not be generated: ${friendlyError(error)}`);
+      }
 
       if (activeProfileUrlRef.current !== profileUrl || analysisRequestIdRef.current !== requestId) {
         return;
@@ -699,10 +738,6 @@ export function SidebarApp() {
       setStatus("analysis_complete");
       setNextAction(normalizedResult.recommendedNextAction || normalizedResult.recommendedAction);
       setMessage("Profile analysis is ready. Generate a message only when you need a draft.");
-
-      if (!isBetaProLicenseActive(licenseState)) {
-        setDailyUsage(await incrementDailyUsage("profileAnalyses"));
-      }
     } catch (error) {
       setStatus("error");
       setMessage(friendlyError(error));
